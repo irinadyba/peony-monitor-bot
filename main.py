@@ -3,8 +3,8 @@ import asyncio
 import requests
 from playwright.async_api import async_playwright
 
-PRODUCT_NAME = "Albert Crousse"
-PRODUCT_URL = "https://pivoinesriviere.com/produit/albert-crousse/"
+PRODUCT_NAME = "ALESIA"
+PRODUCT_URL = "https://pivoinesriviere.com/produit/alesia/"
 
 TELEGRAM_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 CHAT_ID = "450401868"
@@ -18,6 +18,7 @@ def send_telegram(message):
         data={
             "chat_id": CHAT_ID,
             "text": message,
+            "disable_web_page_preview": False,
         },
         timeout=30,
     )
@@ -26,61 +27,65 @@ def send_telegram(message):
 
 
 async def check_product(page):
-    await page.goto(
-        PRODUCT_URL,
-        wait_until="domcontentloaded",
-        timeout=60000
-    )
+    try:
+        await page.goto(
+            PRODUCT_URL,
+            wait_until="domcontentloaded",
+            timeout=60000,
+        )
 
-    await page.wait_for_timeout(3000)
+        await page.wait_for_timeout(3000)
 
-    text = await page.locator("body").inner_text()
-    text_lower = text.lower()
+        text = await page.locator("body").inner_text()
+        text_lower = text.lower()
 
-    out_of_stock_phrases = [
-        "rupture de stock",
-        "notify me when available",
-        "épuisée pour cette année",
-    ]
+        # Явные признаки отсутствия товара
+        out_of_stock_phrases = [
+            "rupture de stock",
+            "notify me when available",
+            "épuisée pour cette année",
+        ]
 
-    for phrase in out_of_stock_phrases:
-        if phrase.lower() in text_lower:
-            return False, phrase
+        for phrase in out_of_stock_phrases:
+            if phrase.lower() in text_lower:
+                return "out", phrase
 
-    buttons = page.locator(
-        "button, input[type='submit'], a"
-    )
+        # Проверяем кнопку добавления в корзину
+        buttons = page.locator(
+            "button, input[type='submit'], a"
+        )
 
-    for i in range(await buttons.count()):
-        element = buttons.nth(i)
+        for i in range(await buttons.count()):
+            element = buttons.nth(i)
 
-        try:
-            if not await element.is_visible():
+            try:
+                if not await element.is_visible():
+                    continue
+
+                element_text = (
+                    await element.inner_text()
+                ).strip().lower()
+
+                if "ajouter au panier" in element_text:
+                    if await element.is_enabled():
+                        return "in", "Ajouter au panier доступна"
+
+            except Exception:
                 continue
 
-            element_text = (
-                await element.inner_text()
-            ).strip().lower()
+        return "out", "Кнопка покупки недоступна"
 
-            if "ajouter au panier" in element_text:
-                if await element.is_enabled():
-                    return True, "Ajouter au panier доступна"
-
-        except Exception:
-            continue
-
-    return False, "Кнопка покупки недоступна"
+    except Exception as error:
+        return "error", repr(error)
 
 
 async def main():
     print("БОТ ЗАПУЩЕН")
-    print("ТЕСТ TELEGRAM")
     print("Мониторинг:", PRODUCT_NAME)
+    print("Интервал: 60 секунд")
 
-    # Специально False для теста.
-    # Albert Crousse сейчас True,
-    # поэтому Telegram должен получить уведомление.
-    last_status = False
+    # Первое состояние пока не отправляем.
+    last_status = None
 
     async with async_playwright() as p:
 
@@ -96,14 +101,32 @@ async def main():
                 print()
                 print("================================")
                 print("ПРОВЕРКА:", PRODUCT_NAME)
+                print("URL:", PRODUCT_URL)
 
-                try:
-                    available, reason = await check_product(page)
+                status, reason = await check_product(page)
 
-                    print("AVAILABLE:", available)
-                    print("REASON:", reason)
+                print("STATUS:", status)
+                print("REASON:", reason)
 
-                    if available and not last_status:
+                # Ошибка сайта НЕ считается исчезновением товара.
+                if status == "error":
+                    print("⚠️ Ошибка проверки. Состояние не изменяем.")
+
+                else:
+
+                    # Первая успешная проверка:
+                    # просто запоминаем состояние.
+                    if last_status is None:
+
+                        last_status = status
+
+                        print(
+                            "Начальное состояние сохранено:",
+                            status
+                        )
+
+                    # Товар появился
+                    elif status == "in" and last_status == "out":
 
                         message = (
                             f"🟢 {PRODUCT_NAME} появилась в продаже!\n\n"
@@ -113,9 +136,10 @@ async def main():
 
                         send_telegram(message)
 
-                        last_status = available
+                        last_status = "in"
 
-                    elif not available and last_status:
+                    # Товар закончился
+                    elif status == "out" and last_status == "in":
 
                         message = (
                             f"🔴 {PRODUCT_NAME} закончилась.\n\n"
@@ -125,10 +149,13 @@ async def main():
 
                         send_telegram(message)
 
-                        last_status = available
+                        last_status = "out"
 
-                except Exception as error:
-                    print("CHECK ERROR:", repr(error))
+                    else:
+                        print(
+                            "Состояние не изменилось — "
+                            "Telegram не отправляем."
+                        )
 
                 print("Следующая проверка через 60 секунд.")
                 print("================================")
