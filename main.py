@@ -1,45 +1,86 @@
 import os
-import time
-import requests
+import asyncio
+from playwright.async_api import async_playwright
 
 TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
-URL = f"https://api.telegram.org/bot{TOKEN}"
 
-offset = 0
+PRODUCT_URL = "https://pivoinesriviere.com/produit/alesia/"
 
-print("Telegram bot started")
+async def check_product(page):
+    await page.goto(
+        PRODUCT_URL,
+        wait_until="domcontentloaded",
+        timeout=60000
+    )
 
-while True:
-    try:
-        response = requests.get(
-            f"{URL}/getUpdates",
-            params={"offset": offset, "timeout": 30},
-            timeout=35,
+    await page.wait_for_timeout(3000)
+
+    text = await page.locator("body").inner_text()
+
+    # Признаки отсутствия товара
+    out_of_stock = [
+        "Rupture de stock",
+        "Notify me when available",
+        "épuisée pour cette année",
+    ]
+
+    for phrase in out_of_stock:
+        if phrase.lower() in text.lower():
+            return False, phrase
+
+    # Проверяем, есть ли реально доступный вариант
+    buttons = page.locator(
+        "button, input[type='submit'], a"
+    )
+
+    visible_buy_button = False
+
+    for i in range(await buttons.count()):
+        element = buttons.nth(i)
+
+        try:
+            if not await element.is_visible():
+                continue
+
+            element_text = (await element.inner_text()).strip().lower()
+
+            if "ajouter au panier" in element_text:
+                if await element.is_enabled():
+                    visible_buy_button = True
+                    break
+
+        except Exception:
+            continue
+
+    if visible_buy_button:
+        return True, "Ajouter au panier доступна"
+
+    return False, "Кнопка покупки недоступна"
+
+
+async def main():
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(
+            headless=True
         )
 
-        data = response.json()
+        page = await browser.new_page()
 
-        if data.get("ok"):
-            for update in data["result"]:
-                offset = update["update_id"] + 1
+        try:
+            available, reason = await check_product(page)
 
-                message = update.get("message")
-                if not message:
-                    continue
+            print("================================")
+            print("ALESIA")
+            print("URL:", PRODUCT_URL)
+            print("AVAILABLE:", available)
+            print("REASON:", reason)
+            print("================================")
 
-                chat_id = message["chat"]["id"]
-                text = message.get("text", "")
+        except Exception as e:
+            print("CHECK ERROR:", repr(e))
 
-                if text == "/start":
-                    requests.post(
-                        f"{URL}/sendMessage",
-                        json={
-                            "chat_id": chat_id,
-                            "text": "✅ Бот работает! Railway и Telegram подключены."
-                        },
-                        timeout=10,
-                    )
+        finally:
+            await browser.close()
 
-    except Exception as e:
-        print("Error:", e)
-        time.sleep(5)
+
+asyncio.run(main())
