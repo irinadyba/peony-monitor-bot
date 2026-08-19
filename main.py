@@ -49,11 +49,19 @@ def load_products():
 
 def save_products(products):
     with open(DATA_FILE, "w", encoding="utf-8") as f:
-        json.dump(products, f, ensure_ascii=False, indent=2)
+        json.dump(
+            products,
+            f,
+            ensure_ascii=False,
+            indent=2
+        )
 
 
 def telegram_request(method, data=None):
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/{method}"
+    url = (
+        f"https://api.telegram.org/"
+        f"bot{TELEGRAM_TOKEN}/{method}"
+    )
 
     response = requests.post(
         url,
@@ -103,6 +111,8 @@ async def check_product(page, product):
     url = product["url"]
 
     try:
+        print("Открываю:", url)
+
         await page.goto(
             url,
             wait_until="domcontentloaded",
@@ -111,10 +121,16 @@ async def check_product(page, product):
 
         await page.wait_for_timeout(3000)
 
-        text = await page.locator("body").inner_text()
+        text = await page.locator(
+            "body"
+        ).inner_text()
+
         text_lower = text.lower()
 
-        # Защита сайтов: не считаем защитную страницу товаром
+        # =========================================
+        # ЗАЩИТА САЙТОВ / CLOUDFLARE
+        # =========================================
+
         protection_phrases = [
             "just a moment",
             "checking your browser",
@@ -124,33 +140,47 @@ async def check_product(page, product):
         ]
 
         for phrase in protection_phrases:
-            if phrase in text_lower:
-                return "unknown", "Страница защиты сайта"
 
-        # ---------------------------------------------
-        # Pivoines Rivière
-        # ---------------------------------------------
+            if phrase in text_lower:
+
+                return (
+                    "unknown",
+                    "Страница защиты сайта"
+                )
+
+        # =========================================
+        # PIVOINES RIVIÈRE
+        # =========================================
 
         if "pivoinesriviere.com" in url.lower():
 
-            out_of_stock = [
+            out_phrases = [
                 "rupture de stock",
                 "épuisée pour cette année",
                 "notify me when available",
             ]
 
-            for phrase in out_of_stock:
+            for phrase in out_phrases:
+
                 if phrase.lower() in text_lower:
-                    return "out", phrase
+
+                    return (
+                        "out",
+                        phrase
+                    )
 
             buttons = page.locator(
                 "button, input[type='submit'], a"
             )
 
-            for i in range(await buttons.count()):
+            for i in range(
+                await buttons.count()
+            ):
+
                 element = buttons.nth(i)
 
                 try:
+
                     if not await element.is_visible():
                         continue
 
@@ -158,38 +188,65 @@ async def check_product(page, product):
                         await element.inner_text()
                     ).strip().lower()
 
-                    if "ajouter au panier" in element_text:
+                    if (
+                        "ajouter au panier"
+                        in element_text
+                    ):
+
                         if await element.is_enabled():
-                            return "in", "Ajouter au panier доступна"
+
+                            return (
+                                "in",
+                                "Ajouter au panier доступна"
+                            )
 
                 except Exception:
                     continue
 
-            return "out", "Кнопка покупки недоступна"
+            return (
+                "out",
+                "Кнопка покупки недоступна"
+            )
 
-        # ---------------------------------------------
-        # Paeonia Miely
-        # ---------------------------------------------
+        # =========================================
+        # PAEONIA MIELY
+        # =========================================
 
         if "paeoniamiely.com" in url.lower():
 
             if "ausverkauft" in text_lower:
-                return "out", "Ausverkauft"
+
+                return (
+                    "out",
+                    "Ausverkauft"
+                )
 
             if "nicht verfügbar" in text_lower:
-                return "out", "Nicht verfügbar"
+
+                return (
+                    "out",
+                    "Nicht verfügbar"
+                )
 
             if "vorrätig" in text_lower:
-                return "in", "Vorrätig"
+
+                return (
+                    "in",
+                    "Vorrätig"
+                )
 
             buttons = page.locator(
                 "button, input[type='submit'], a"
             )
 
-            for i in range(await buttons.count()):
+            for i in range(
+                await buttons.count()
+            ):
+
                 element = buttons.nth(i)
 
                 try:
+
                     if not await element.is_visible():
                         continue
 
@@ -197,24 +254,108 @@ async def check_product(page, product):
                         await element.inner_text()
                     ).strip().lower()
 
-                    if "in den warenkorb" in element_text:
+                    if (
+                        "in den warenkorb"
+                        in element_text
+                    ):
+
                         if await element.is_enabled():
-                            return "in", "In den Warenkorb"
+
+                            return (
+                                "in",
+                                "In den Warenkorb"
+                            )
 
                 except Exception:
                     continue
 
-            return "out", "Товар недоступен"
+            return (
+                "out",
+                "Товар недоступен"
+            )
 
-        # ---------------------------------------------
-        # Универсальный алгоритм
-        # ---------------------------------------------
+        # =========================================
+        # GRAEFSWINNING
+        # =========================================
+
+        if "graefswinning.be" in url.lower():
+
+            # -------------------------------------
+            # ЯВНО НЕТ В НАЛИЧИИ
+            # -------------------------------------
+
+            if (
+                "this variety is not available"
+                in text_lower
+            ):
+
+                return (
+                    "out",
+                    "This variety is not available"
+                )
+
+            # -------------------------------------
+            # ЯВНО ДОСТУПЕН
+            # -------------------------------------
+
+            if (
+                "order now for the best selection"
+                in text_lower
+            ):
+
+                return (
+                    "in",
+                    "Order now for the best selection"
+                )
+
+            # -------------------------------------
+            # Дополнительная проверка кнопки
+            # -------------------------------------
+
+            buttons = page.locator(
+                "button, input[type='submit'], a"
+            )
+
+            for i in range(
+                await buttons.count()
+            ):
+
+                element = buttons.nth(i)
+
+                try:
+
+                    if not await element.is_visible():
+                        continue
+
+                    element_text = (
+                        await element.inner_text()
+                    ).strip().lower()
+
+                    if "order now" in element_text:
+
+                        if await element.is_enabled():
+
+                            return (
+                                "in",
+                                "Order now доступна"
+                            )
+
+                except Exception:
+                    continue
+
+            return (
+                "unknown",
+                "Не удалось определить наличие Graefswinning"
+            )
+
+        # =========================================
+        # УНИВЕРСАЛЬНЫЙ АЛГОРИТМ
+        # =========================================
 
         out_phrases = [
             "out of stock",
             "sold out",
             "unavailable",
-            "not available",
             "out-of-stock",
             "rupture de stock",
             "épuisé",
@@ -228,8 +369,13 @@ async def check_product(page, product):
         ]
 
         for phrase in out_phrases:
+
             if phrase in text_lower:
-                return "out", phrase
+
+                return (
+                    "out",
+                    phrase
+                )
 
         in_phrases = [
             "in stock",
@@ -243,21 +389,29 @@ async def check_product(page, product):
             "auf lager",
             "vorrätig",
             "disponible",
-            "disponibile",
         ]
 
         for phrase in in_phrases:
+
             if phrase in text_lower:
-                return "in", phrase
+
+                return (
+                    "in",
+                    phrase
+                )
 
         buttons = page.locator(
             "button, input[type='submit'], a"
         )
 
-        for i in range(await buttons.count()):
+        for i in range(
+            await buttons.count()
+        ):
+
             element = buttons.nth(i)
 
             try:
+
                 if not await element.is_visible():
                     continue
 
@@ -275,34 +429,141 @@ async def check_product(page, product):
                 ]
 
                 for word in buy_words:
+
                     if word in element_text:
+
                         if await element.is_enabled():
-                            return "in", word
+
+                            return (
+                                "in",
+                                word
+                            )
 
             except Exception:
                 continue
 
-        return "unknown", "Не удалось уверенно определить"
+        return (
+            "unknown",
+            "Не удалось уверенно определить"
+        )
 
     except Exception as error:
-        return "error", repr(error)
+
+        print(
+            "Ошибка проверки:",
+            repr(error)
+        )
+
+        return (
+            "error",
+            repr(error)
+        )
 
 
-async def handle_message(message, products, page):
+async def add_product(
+    url,
+    products,
+    page
+):
 
-    chat_id = str(message["chat"]["id"])
+    temporary_product = {
+        "name": "Новый товар",
+        "url": url,
+        "status": None,
+    }
+
+    status, reason = await check_product(
+        page,
+        temporary_product
+    )
+
+    name = await get_product_name(page)
+
+    if status in (
+        "unknown",
+        "error"
+    ):
+
+        send_telegram(
+            f"🟡 {name}\n\n"
+            f"Не удалось уверенно определить наличие.\n"
+            f"Причина: {reason}\n\n"
+            f"{url}\n\n"
+            f"Товар НЕ добавлен в мониторинг."
+        )
+
+        return
+
+    numbers = []
+
+    for key in products:
+
+        try:
+            numbers.append(
+                int(key)
+            )
+
+        except Exception:
+            pass
+
+    product_id = (
+        str(max(numbers) + 1)
+        if numbers
+        else "1"
+    )
+
+    products[product_id] = {
+        "name": name,
+        "url": url,
+        "status": status,
+    }
+
+    save_products(products)
+
+    if status == "in":
+
+        icon = "🟢"
+        state = "В НАЛИЧИИ"
+
+    else:
+
+        icon = "🔴"
+        state = "НЕТ В НАЛИЧИИ"
+
+    send_telegram(
+        f"{icon} Добавлено!\n\n"
+        f"№ {product_id}\n"
+        f"{name}\n"
+        f"{state}\n"
+        f"{reason}\n"
+        f"{url}"
+    )
+
+
+async def handle_message(
+    message,
+    products,
+    page
+):
+
+    chat_id = str(
+        message["chat"]["id"]
+    )
 
     if chat_id != CHAT_ID:
         return
 
-    text = message.get("text", "").strip()
+    text = message.get(
+        "text",
+        ""
+    ).strip()
 
     if not text:
         return
 
-    # ---------------------------------------------
-    # /start
-    # ---------------------------------------------
+    # =========================================
+    # /START
+    # =========================================
 
     if text == "/start":
 
@@ -311,104 +572,47 @@ async def handle_message(message, products, page):
             "Команды:\n"
             "/add — добавить страницу\n"
             "/list — список\n"
-            "/remove НОМЕР — удалить\n"
+            "/remove НОМЕР — удалить товар\n"
             "/check НОМЕР — проверить сейчас\n\n"
             "Можно также просто отправить ссылку."
         )
 
         return
 
-    # ---------------------------------------------
-    # Простая ссылка без /add
-    # ---------------------------------------------
+    # =========================================
+    # ПРОСТАЯ ССЫЛКА БЕЗ /ADD
+    # =========================================
 
     if (
         text.startswith("http://")
         or text.startswith("https://")
     ):
 
-        url = text
-
         send_telegram(
             "🔎 Получила ссылку.\n"
             "Открываю страницу и проверяю..."
         )
 
-        temporary_product = {
-            "name": "Новый товар",
-            "url": url,
-            "status": None,
-        }
-
-        status, reason = await check_product(
-            page,
-            temporary_product
-        )
-
-        name = await get_product_name(page)
-
-        if status in ("unknown", "error"):
-
-            send_telegram(
-                f"🟡 {name}\n\n"
-                f"Не удалось уверенно определить наличие.\n"
-                f"Причина: {reason}\n\n"
-                f"{url}\n\n"
-                f"Товар НЕ добавлен в мониторинг."
-            )
-
-            return
-
-        numbers = []
-
-        for key in products:
-            try:
-                numbers.append(int(key))
-            except Exception:
-                pass
-
-        product_id = (
-            str(max(numbers) + 1)
-            if numbers
-            else "1"
-        )
-
-        products[product_id] = {
-            "name": name,
-            "url": url,
-            "status": status,
-        }
-
-        save_products(products)
-
-        if status == "in":
-            icon = "🟢"
-            state = "В НАЛИЧИИ"
-        else:
-            icon = "🔴"
-            state = "НЕТ В НАЛИЧИИ"
-
-        send_telegram(
-            f"{icon} Добавлено!\n\n"
-            f"№ {product_id}\n"
-            f"{name}\n"
-            f"{state}\n"
-            f"{reason}\n"
-            f"{url}"
+        await add_product(
+            text,
+            products,
+            page
         )
 
         return
 
-    # ---------------------------------------------
-    # /list
-    # ---------------------------------------------
+    # =========================================
+    # /LIST
+    # =========================================
 
     if text == "/list":
 
         if not products:
+
             send_telegram(
                 "Список пуст."
             )
+
             return
 
         lines = [
@@ -417,13 +621,20 @@ async def handle_message(message, products, page):
 
         for product_id, product in products.items():
 
-            status = product.get("status")
+            status = product.get(
+                "status"
+            )
 
             if status == "in":
+
                 icon = "🟢"
+
             elif status == "out":
+
                 icon = "🔴"
+
             else:
+
                 icon = "🟡"
 
             lines.append(
@@ -438,9 +649,9 @@ async def handle_message(message, products, page):
 
         return
 
-    # ---------------------------------------------
-    # /remove
-    # ---------------------------------------------
+    # =========================================
+    # /REMOVE
+    # =========================================
 
     if text.startswith("/remove"):
 
@@ -465,7 +676,9 @@ async def handle_message(message, products, page):
 
             return
 
-        removed = products.pop(product_id)
+        removed = products.pop(
+            product_id
+        )
 
         save_products(products)
 
@@ -476,9 +689,9 @@ async def handle_message(message, products, page):
 
         return
 
-    # ---------------------------------------------
-    # /check
-    # ---------------------------------------------
+    # =========================================
+    # /CHECK
+    # =========================================
 
     if text.startswith("/check"):
 
@@ -534,13 +747,15 @@ async def handle_message(message, products, page):
 
         return
 
-    # ---------------------------------------------
-    # /add
-    # ---------------------------------------------
+    # =========================================
+    # /ADD
+    # =========================================
 
     if text.startswith("/add"):
 
-        parts = text.split(maxsplit=1)
+        parts = text.split(
+            maxsplit=1
+        )
 
         if len(parts) != 2:
 
@@ -553,75 +768,23 @@ async def handle_message(message, products, page):
         url = parts[1].strip()
 
         send_telegram(
-            "🔎 Открываю страницу и проверяю..."
+            "🔎 Получила ссылку.\n"
+            "Открываю страницу и проверяю..."
         )
 
-        temporary_product = {
-            "name": "Новый товар",
-            "url": url,
-            "status": None,
-        }
-
-        status, reason = await check_product(
-            page,
-            temporary_product
-        )
-
-        name = await get_product_name(page)
-
-        if status in ("unknown", "error"):
-
-            send_telegram(
-                f"🟡 {name}\n\n"
-                f"Не удалось уверенно определить наличие.\n"
-                f"{reason}\n\n"
-                f"Товар НЕ добавлен."
-            )
-
-            return
-
-        numbers = []
-
-        for key in products:
-
-            try:
-                numbers.append(int(key))
-            except Exception:
-                pass
-
-        product_id = (
-            str(max(numbers) + 1)
-            if numbers
-            else "1"
-        )
-
-        products[product_id] = {
-            "name": name,
-            "url": url,
-            "status": status,
-        }
-
-        save_products(products)
-
-        if status == "in":
-            icon = "🟢"
-            state = "В НАЛИЧИИ"
-        else:
-            icon = "🔴"
-            state = "НЕТ В НАЛИЧИИ"
-
-        send_telegram(
-            f"{icon} Добавлено!\n\n"
-            f"№ {product_id}\n"
-            f"{name}\n"
-            f"{state}\n"
-            f"{url}"
+        await add_product(
+            url,
+            products,
+            page
         )
 
         return
 
 
-async def telegram_listener(products, page):
+async def telegram_listener(
+    products,
+    page
+):
 
     offset = 0
 
@@ -645,6 +808,7 @@ async def telegram_listener(products, page):
             if not result.get("ok"):
 
                 await asyncio.sleep(5)
+
                 continue
 
             for update in result.get(
@@ -724,7 +888,10 @@ async def monitor_products(
                 reason
             )
 
-            # Защита от ложных изменений
+            # =================================
+            # UNKNOWN / ERROR
+            # =================================
+
             if status in (
                 "unknown",
                 "error"
@@ -740,6 +907,10 @@ async def monitor_products(
                 "status"
             )
 
+            # =================================
+            # ПЕРВОЕ СОСТОЯНИЕ
+            # =================================
+
             if previous_status is None:
 
                 product["status"] = status
@@ -749,6 +920,10 @@ async def monitor_products(
                     status
                 )
 
+            # =================================
+            # OUT -> IN
+            # =================================
+
             elif (
                 previous_status == "out"
                 and status == "in"
@@ -757,10 +932,15 @@ async def monitor_products(
                 send_telegram(
                     f"🟢 {product['name']} "
                     f"появилась в продаже!\n\n"
+                    f"{reason}\n\n"
                     f"{product['url']}"
                 )
 
                 product["status"] = "in"
+
+            # =================================
+            # IN -> OUT
+            # =================================
 
             elif (
                 previous_status == "in"
@@ -770,10 +950,15 @@ async def monitor_products(
                 send_telegram(
                     f"🔴 {product['name']} "
                     f"закончилась.\n\n"
+                    f"{reason}\n\n"
                     f"{product['url']}"
                 )
 
                 product["status"] = "out"
+
+            # =================================
+            # БЕЗ ИЗМЕНЕНИЙ
+            # =================================
 
             else:
 
