@@ -2,9 +2,8 @@ import os
 import asyncio
 from playwright.async_api import async_playwright
 
-TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
-
 PRODUCT_URL = "https://pivoinesriviere.com/produit/alesia/"
+
 
 async def check_product(page):
     await page.goto(
@@ -17,7 +16,6 @@ async def check_product(page):
 
     text = await page.locator("body").inner_text()
 
-    # Признаки отсутствия товара
     out_of_stock = [
         "Rupture de stock",
         "Notify me when available",
@@ -28,12 +26,9 @@ async def check_product(page):
         if phrase.lower() in text.lower():
             return False, phrase
 
-    # Проверяем, есть ли реально доступный вариант
     buttons = page.locator(
         "button, input[type='submit'], a"
     )
-
-    visible_buy_button = False
 
     for i in range(await buttons.count()):
         element = buttons.nth(i)
@@ -46,20 +41,17 @@ async def check_product(page):
 
             if "ajouter au panier" in element_text:
                 if await element.is_enabled():
-                    visible_buy_button = True
-                    break
+                    return True, "Ajouter au panier доступна"
 
         except Exception:
             continue
-
-    if visible_buy_button:
-        return True, "Ajouter au panier доступна"
 
     return False, "Кнопка покупки недоступна"
 
 
 async def main():
     async with async_playwright() as p:
+
         browser = await p.chromium.launch(
             headless=True
         )
@@ -67,17 +59,25 @@ async def main():
         page = await browser.new_page()
 
         try:
-            available, reason = await check_product(page)
+            while True:
 
-            print("================================")
-            print("ALESIA")
-            print("URL:", PRODUCT_URL)
-            print("AVAILABLE:", available)
-            print("REASON:", reason)
-            print("================================")
+                print("================================")
+                print("Проверка ALESIA")
+                print("URL:", PRODUCT_URL)
 
-        except Exception as e:
-            print("CHECK ERROR:", repr(e))
+                try:
+                    available, reason = await check_product(page)
+
+                    print("AVAILABLE:", available)
+                    print("REASON:", reason)
+
+                except Exception as e:
+                    print("CHECK ERROR:", repr(e))
+
+                print("Следующая проверка через 60 секунд.")
+                print("================================")
+
+                await asyncio.sleep(60)
 
         finally:
             await browser.close()
