@@ -1,7 +1,7 @@
-import os
 import asyncio
 from playwright.async_api import async_playwright
 
+PRODUCT_NAME = "ALESIA"
 PRODUCT_URL = "https://pivoinesriviere.com/produit/alesia/"
 
 
@@ -15,17 +15,20 @@ async def check_product(page):
     await page.wait_for_timeout(3000)
 
     text = await page.locator("body").inner_text()
+    text_lower = text.lower()
 
-    out_of_stock = [
-        "Rupture de stock",
-        "Notify me when available",
+    # Явные признаки отсутствия товара
+    out_of_stock_phrases = [
+        "rupture de stock",
+        "notify me when available",
         "épuisée pour cette année",
     ]
 
-    for phrase in out_of_stock:
-        if phrase.lower() in text.lower():
+    for phrase in out_of_stock_phrases:
+        if phrase.lower() in text_lower:
             return False, phrase
 
+    # Проверяем доступную кнопку добавления в корзину
     buttons = page.locator(
         "button, input[type='submit'], a"
     )
@@ -37,7 +40,9 @@ async def check_product(page):
             if not await element.is_visible():
                 continue
 
-            element_text = (await element.inner_text()).strip().lower()
+            element_text = (
+                await element.inner_text()
+            ).strip().lower()
 
             if "ajouter au panier" in element_text:
                 if await element.is_enabled():
@@ -50,6 +55,10 @@ async def check_product(page):
 
 
 async def main():
+    print("БОТ ЗАПУЩЕН")
+    print("Мониторинг:", PRODUCT_NAME)
+    print("Интервал: 60 секунд")
+
     async with async_playwright() as p:
 
         browser = await p.chromium.launch(
@@ -61,8 +70,9 @@ async def main():
         try:
             while True:
 
+                print()
                 print("================================")
-                print("Проверка ALESIA")
+                print("ПРОВЕРКА:", PRODUCT_NAME)
                 print("URL:", PRODUCT_URL)
 
                 try:
@@ -71,8 +81,8 @@ async def main():
                     print("AVAILABLE:", available)
                     print("REASON:", reason)
 
-                except Exception as e:
-                    print("CHECK ERROR:", repr(e))
+                except Exception as error:
+                    print("CHECK ERROR:", repr(error))
 
                 print("Следующая проверка через 60 секунд.")
                 print("================================")
