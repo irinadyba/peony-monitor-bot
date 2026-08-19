@@ -3,8 +3,8 @@ import asyncio
 import requests
 from playwright.async_api import async_playwright
 
-PRODUCT_NAME = "ALESIA"
-PRODUCT_URL = "https://pivoinesriviere.com/produit/alesia/"
+PRODUCT_NAME = "Albert Crousse"
+PRODUCT_URL = "https://pivoinesriviere.com/produit/albert-crousse/"
 
 TELEGRAM_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 CHAT_ID = "450401868"
@@ -74,10 +74,13 @@ async def check_product(page):
 
 async def main():
     print("БОТ ЗАПУЩЕН")
+    print("ТЕСТ TELEGRAM")
     print("Мониторинг:", PRODUCT_NAME)
-    print("Интервал: 60 секунд")
 
-    last_status = None
+    # Специально False для теста.
+    # Albert Crousse сейчас True,
+    # поэтому Telegram должен получить уведомление.
+    last_status = False
 
     async with async_playwright() as p:
 
@@ -100,14 +103,8 @@ async def main():
                     print("AVAILABLE:", available)
                     print("REASON:", reason)
 
-                    # Первая проверка только запоминает состояние.
-                    # Telegram при запуске ничего не получает.
-                    if last_status is None:
-                        last_status = available
-                        print("Начальное состояние сохранено.")
+                    if available and not last_status:
 
-                    # Товар появился
-                    elif available and not last_status:
                         message = (
                             f"🟢 {PRODUCT_NAME} появилась в продаже!\n\n"
                             f"Pivoines Rivière\n"
@@ -115,10 +112,11 @@ async def main():
                         )
 
                         send_telegram(message)
+
                         last_status = available
 
-                    # Товар закончился
                     elif not available and last_status:
+
                         message = (
                             f"🔴 {PRODUCT_NAME} закончилась.\n\n"
                             f"Pivoines Rivière\n"
@@ -126,6 +124,7 @@ async def main():
                         )
 
                         send_telegram(message)
+
                         last_status = available
 
                 except Exception as error:
