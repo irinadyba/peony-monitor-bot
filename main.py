@@ -1,8 +1,28 @@
+import os
 import asyncio
+import requests
 from playwright.async_api import async_playwright
 
 PRODUCT_NAME = "ALESIA"
 PRODUCT_URL = "https://pivoinesriviere.com/produit/alesia/"
+
+TELEGRAM_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
+CHAT_ID = "450401868"
+
+
+def send_telegram(message):
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+
+    response = requests.post(
+        url,
+        data={
+            "chat_id": CHAT_ID,
+            "text": message,
+        },
+        timeout=30,
+    )
+
+    print("Telegram:", response.status_code, response.text)
 
 
 async def check_product(page):
@@ -17,7 +37,6 @@ async def check_product(page):
     text = await page.locator("body").inner_text()
     text_lower = text.lower()
 
-    # Явные признаки отсутствия товара
     out_of_stock_phrases = [
         "rupture de stock",
         "notify me when available",
@@ -28,7 +47,6 @@ async def check_product(page):
         if phrase.lower() in text_lower:
             return False, phrase
 
-    # Проверяем доступную кнопку добавления в корзину
     buttons = page.locator(
         "button, input[type='submit'], a"
     )
@@ -59,6 +77,8 @@ async def main():
     print("Мониторинг:", PRODUCT_NAME)
     print("Интервал: 60 секунд")
 
+    last_status = None
+
     async with async_playwright() as p:
 
         browser = await p.chromium.launch(
@@ -73,13 +93,40 @@ async def main():
                 print()
                 print("================================")
                 print("ПРОВЕРКА:", PRODUCT_NAME)
-                print("URL:", PRODUCT_URL)
 
                 try:
                     available, reason = await check_product(page)
 
                     print("AVAILABLE:", available)
                     print("REASON:", reason)
+
+                    # Первая проверка только запоминает состояние.
+                    # Telegram при запуске ничего не получает.
+                    if last_status is None:
+                        last_status = available
+                        print("Начальное состояние сохранено.")
+
+                    # Товар появился
+                    elif available and not last_status:
+                        message = (
+                            f"🟢 {PRODUCT_NAME} появилась в продаже!\n\n"
+                            f"Pivoines Rivière\n"
+                            f"🔗 {PRODUCT_URL}"
+                        )
+
+                        send_telegram(message)
+                        last_status = available
+
+                    # Товар закончился
+                    elif not available and last_status:
+                        message = (
+                            f"🔴 {PRODUCT_NAME} закончилась.\n\n"
+                            f"Pivoines Rivière\n"
+                            f"🔗 {PRODUCT_URL}"
+                        )
+
+                        send_telegram(message)
+                        last_status = available
 
                 except Exception as error:
                     print("CHECK ERROR:", repr(error))
@@ -94,4 +141,3 @@ async def main():
 
 
 asyncio.run(main())
-
