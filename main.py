@@ -43,6 +43,7 @@ def load_products():
     try:
         with open(DATA_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
+
     except Exception:
         return {}
 
@@ -107,11 +108,182 @@ async def get_product_name(page):
     return "Неизвестный товар"
 
 
+async def get_main_product_area(page):
+    """
+    Пытаемся найти именно основной блок товара,
+    а не весь body страницы.
+
+    Это особенно важно для Graefswinning,
+    где ниже могут находиться другие пионы
+    с противоположным статусом.
+    """
+
+    selectors = [
+        "form.cart",
+        "form.variations_form",
+        ".summary",
+        ".product-summary",
+        ".product-info",
+        ".single-product",
+        "main",
+    ]
+
+    for selector in selectors:
+
+        try:
+
+            locator = page.locator(selector)
+
+            count = await locator.count()
+
+            if count == 0:
+                continue
+
+            for i in range(count):
+
+                candidate = locator.nth(i)
+
+                try:
+
+                    if await candidate.is_visible():
+
+                        text = await candidate.inner_text()
+
+                        if text and len(text.strip()) > 20:
+
+                            return candidate
+
+                except Exception:
+                    continue
+
+        except Exception:
+            continue
+
+    return None
+
+
+async def check_graefswinning(page):
+    """
+    Специальная проверка Graefswinning.
+
+    ВАЖНО:
+    не анализируем всю страницу целиком,
+    потому что в блоке рекомендаций могут быть
+    другие сорта с другим статусом.
+    """
+
+    product_area = await get_main_product_area(page)
+
+    if product_area is None:
+
+        return (
+            "unknown",
+            "Не найден основной блок товара"
+        )
+
+    try:
+
+        product_text = await product_area.inner_text()
+
+        product_text_lower = (
+            product_text.lower()
+        )
+
+        # =========================================
+        # НЕТ В НАЛИЧИИ
+        # =========================================
+
+        unavailable_phrases = [
+            "this variety is not available",
+            "this product is not available",
+            "not available",
+        ]
+
+        for phrase in unavailable_phrases:
+
+            if phrase in product_text_lower:
+
+                return (
+                    "out",
+                    phrase
+                )
+
+        # =========================================
+        # В НАЛИЧИИ
+        # =========================================
+
+        if (
+            "order now for the best selection"
+            in product_text_lower
+        ):
+
+            return (
+                "in",
+                "Order now for the best selection"
+            )
+
+        # =========================================
+        # Add to cart
+        # =========================================
+
+        buttons = product_area.locator(
+            "button, input[type='submit'], a"
+        )
+
+        for i in range(
+            await buttons.count()
+        ):
+
+            element = buttons.nth(i)
+
+            try:
+
+                if not await element.is_visible():
+                    continue
+
+                element_text = (
+                    await element.inner_text()
+                ).strip().lower()
+
+                if "add to cart" in element_text:
+
+                    if await element.is_enabled():
+
+                        return (
+                            "in",
+                            "Add to cart доступна"
+                        )
+
+            except Exception:
+                continue
+
+        # =========================================
+        # Если не удалось определить
+        # =========================================
+
+        return (
+            "unknown",
+            "Не удалось уверенно определить наличие Graefswinning"
+        )
+
+    except Exception as error:
+
+        return (
+            "error",
+            repr(error)
+        )
+
+
 async def check_product(page, product):
+
     url = product["url"]
 
     try:
-        print("Открываю:", url)
+
+        print(
+            "Открываю:",
+            url
+        )
 
         await page.goto(
             url,
@@ -128,7 +300,7 @@ async def check_product(page, product):
         text_lower = text.lower()
 
         # =========================================
-        # ЗАЩИТА САЙТОВ / CLOUDFLARE
+        # ЗАЩИТА САЙТА
         # =========================================
 
         protection_phrases = [
@@ -280,72 +452,8 @@ async def check_product(page, product):
 
         if "graefswinning.be" in url.lower():
 
-            # -------------------------------------
-            # ЯВНО НЕТ В НАЛИЧИИ
-            # -------------------------------------
-
-            if (
-                "this variety is not available"
-                in text_lower
-            ):
-
-                return (
-                    "out",
-                    "This variety is not available"
-                )
-
-            # -------------------------------------
-            # ЯВНО ДОСТУПЕН
-            # -------------------------------------
-
-            if (
-                "order now for the best selection"
-                in text_lower
-            ):
-
-                return (
-                    "in",
-                    "Order now for the best selection"
-                )
-
-            # -------------------------------------
-            # Дополнительная проверка кнопки
-            # -------------------------------------
-
-            buttons = page.locator(
-                "button, input[type='submit'], a"
-            )
-
-            for i in range(
-                await buttons.count()
-            ):
-
-                element = buttons.nth(i)
-
-                try:
-
-                    if not await element.is_visible():
-                        continue
-
-                    element_text = (
-                        await element.inner_text()
-                    ).strip().lower()
-
-                    if "order now" in element_text:
-
-                        if await element.is_enabled():
-
-                            return (
-                                "in",
-                                "Order now доступна"
-                            )
-
-                except Exception:
-                    continue
-
-            return (
-                "unknown",
-                "Не удалось определить наличие Graefswinning"
+            return await check_graefswinning(
+                page
             )
 
         # =========================================
@@ -499,6 +607,7 @@ async def add_product(
     for key in products:
 
         try:
+
             numbers.append(
                 int(key)
             )
@@ -580,7 +689,7 @@ async def handle_message(
         return
 
     # =========================================
-    # ПРОСТАЯ ССЫЛКА БЕЗ /ADD
+    # ПРОСТАЯ ССЫЛКА
     # =========================================
 
     if (
@@ -888,10 +997,6 @@ async def monitor_products(
                 reason
             )
 
-            # =================================
-            # UNKNOWN / ERROR
-            # =================================
-
             if status in (
                 "unknown",
                 "error"
@@ -907,10 +1012,6 @@ async def monitor_products(
                 "status"
             )
 
-            # =================================
-            # ПЕРВОЕ СОСТОЯНИЕ
-            # =================================
-
             if previous_status is None:
 
                 product["status"] = status
@@ -919,10 +1020,6 @@ async def monitor_products(
                     "Начальное состояние:",
                     status
                 )
-
-            # =================================
-            # OUT -> IN
-            # =================================
 
             elif (
                 previous_status == "out"
@@ -938,10 +1035,6 @@ async def monitor_products(
 
                 product["status"] = "in"
 
-            # =================================
-            # IN -> OUT
-            # =================================
-
             elif (
                 previous_status == "in"
                 and status == "out"
@@ -955,10 +1048,6 @@ async def monitor_products(
                 )
 
                 product["status"] = "out"
-
-            # =================================
-            # БЕЗ ИЗМЕНЕНИЙ
-            # =================================
 
             else:
 
