@@ -4,7 +4,7 @@ from playwright.async_api import async_playwright
 
 TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 
-PRODUCT_URL = "https://pivoinesriviere.com/produit/albert-crousse/"
+PRODUCT_URL = "https://pivoinesriviere.com/produit/alesia/"
 
 async def check_product(page):
     await page.goto(
