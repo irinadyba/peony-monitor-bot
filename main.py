@@ -3,6 +3,7 @@ import asyncio
 import json
 import re
 import base64
+import threading
 import requests
 
 from playwright.async_api import async_playwright
@@ -13,23 +14,63 @@ from playwright.async_api import async_playwright
 # =========================================================
 
 TELEGRAM_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
-CHAT_ID = str(os.environ["TELEGRAM_CHAT_ID"])
 
-GITHUB_TOKEN = os.environ["DATA_REPO_TOKEN"]
+CHAT_ID = os.environ.get(
+    "CHAT_ID",
+    "450401868"
+)
 
-GITHUB_OWNER = "irinadyba"
-GITHUB_REPO = "peony-monitor-data"
-GITHUB_BRANCH = "main"
+# =========================================================
+# GITHUB
+# =========================================================
 
-PRODUCTS_FILE = "products.json"
-STATE_FILE = "state.json"
+GITHUB_TOKEN = os.environ.get(
+    "GITHUB_TOKEN"
+)
+
+GITHUB_REPO = os.environ.get(
+    "GITHUB_REPO",
+    "irinadyba/peony-monitor-bot"
+)
+
+GITHUB_PATH = os.environ.get(
+    "GITHUB_PATH",
+    "data/products.json"
+)
+
+GITHUB_BRANCH = os.environ.get(
+    "GITHUB_BRANCH",
+    "main"
+)
+
+GITHUB_API = "https://api.github.com"
+
+# =========================================================
+# ЛОКАЛЬНЫЙ ФАЙЛ
+# =========================================================
+
+DATA_DIR = "data"
+
+DATA_FILE = os.path.join(
+    DATA_DIR,
+    "products.json"
+)
+
+# =========================================================
+# ПРОВЕРКА КАЖДЫЕ 5 МИНУТ
+# =========================================================
 
 CHECK_INTERVAL = 300
 
 PAGE_TIMEOUT = 60000
+
 PAGE_WAIT = 3000
 
-GITHUB_API = "https://api.github.com"
+# =========================================================
+# ЗАЩИТА ОТ ОДНОВРЕМЕННОЙ ЗАПИСИ В GITHUB
+# =========================================================
+
+github_lock = threading.Lock()
 
 
 # =========================================================
@@ -64,10 +105,13 @@ DEFAULT_PRODUCTS = {
 
 
 # =========================================================
-# GITHUB
+# GITHUB API — ЗАГОЛОВКИ
 # =========================================================
 
 def github_headers():
+
+    if not GITHUB_TOKEN:
+        return None
 
     return {
         "Accept": "application/vnd.github+json",
@@ -76,106 +120,87 @@ def github_headers():
     }
 
 
-def github_get_file(path):
+# =========================================================
+# GITHUB — ПОЛУЧЕНИЕ ФАЙЛА
+# =========================================================
 
-    url = (
-        f"{GITHUB_API}/repos/"
-        f"{GITHUB_OWNER}/{GITHUB_REPO}/contents/{path}"
-    )
+def github_get_products():
 
-    response = requests.get(
-        url,
-        headers=github_headers(),
-        params={"ref": GITHUB_BRANCH},
-        timeout=30,
-    )
-
-    if response.status_code == 404:
-        return None, None
-
-    response.raise_for_status()
-
-    data = response.json()
-
-    content = base64.b64decode(
-        data["content"].replace("\n", "")
-    ).decode("utf-8")
-
-    return content, data["sha"]
-
-
-def github_save_file(path, content, sha=None, message="Update data"):
-
-    url = (
-        f"{GITHUB_API}/repos/"
-        f"{GITHUB_OWNER}/{GITHUB_REPO}/contents/{path}"
-    )
-
-    encoded = base64.b64encode(
-        content.encode("utf-8")
-    ).decode("ascii")
-
-    payload = {
-        "message": message,
-        "content": encoded,
-        "branch": GITHUB_BRANCH,
-    }
-
-    if sha:
-        payload["sha"] = sha
-
-    response = requests.put(
-        url,
-        headers=github_headers(),
-        json=payload,
-        timeout=30,
-    )
-
-    response.raise_for_status()
-
-    print(
-        f"GitHub: {path} сохранён."
-    )
-
-
-def load_products():
-
-    content, sha = github_get_file(
-        PRODUCTS_FILE
-    )
-
-    if content is None:
-
+    if not GITHUB_TOKEN:
         print(
-            "products.json отсутствует."
+            "GITHUB_TOKEN не задан. "
+            "GitHub-синхронизация отключена."
         )
 
-        products = dict(DEFAULT_PRODUCTS)
+        return None
 
-        github_save_file(
-            PRODUCTS_FILE,
-            json.dumps(
-                products,
-                ensure_ascii=False,
-                indent=2
-            ),
-            message="Create products.json",
-        )
-
-        return products
+    url = (
+        f"{GITHUB_API}/repos/"
+        f"{GITHUB_REPO}/contents/"
+        f"{GITHUB_PATH}"
+    )
 
     try:
 
-        products = json.loads(content)
+        response = requests.get(
+            url,
+            headers=github_headers(),
+            params={
+                "ref": GITHUB_BRANCH
+            },
+            timeout=30
+        )
 
-        if not isinstance(products, dict):
+        # Файл ещё не существует
+        if response.status_code == 404:
+
+            print(
+                "GitHub: data/products.json ещё не существует."
+            )
+
+            return None
+
+        response.raise_for_status()
+
+        data = response.json()
+
+        encoded_content = data.get(
+            "content",
+            ""
+        )
+
+        if not encoded_content:
+            return None
+
+        # GitHub иногда вставляет переносы строк
+        encoded_content = (
+            encoded_content
+            .replace("\n", "")
+            .replace("\r", "")
+        )
+
+        decoded = base64.b64decode(
+            encoded_content
+        ).decode(
+            "utf-8"
+        )
+
+        products = json.loads(
+            decoded
+        )
+
+        if not isinstance(
+            products,
+            dict
+        ):
 
             raise ValueError(
-                "products.json должен быть объектом"
+                "GitHub products.json должен быть JSON-объектом."
             )
 
         print(
-            f"Загружено товаров: {len(products)}"
+            f"GitHub: загружено товаров: "
+            f"{len(products)}"
         )
 
         return products
@@ -183,85 +208,384 @@ def load_products():
     except Exception as error:
 
         print(
-            "Ошибка products.json:",
+            "Ошибка загрузки products.json из GitHub:",
             repr(error)
         )
 
-        raise
+        return None
 
 
-def save_products(products):
+# =========================================================
+# GITHUB — СОХРАНЕНИЕ ФАЙЛА
+# =========================================================
 
-    content, sha = github_get_file(
-        PRODUCTS_FILE
-    )
+def github_save_products(
+    products
+):
 
-    github_save_file(
-        PRODUCTS_FILE,
-        json.dumps(
-            products,
-            ensure_ascii=False,
-            indent=2
-        ),
-        sha=sha,
-        message="Update products.json",
-    )
+    if not GITHUB_TOKEN:
+
+        print(
+            "GITHUB_TOKEN не задан. "
+            "Сохранение в GitHub пропущено."
+        )
+
+        return False
+
+    with github_lock:
+
+        try:
+
+            url = (
+                f"{GITHUB_API}/repos/"
+                f"{GITHUB_REPO}/contents/"
+                f"{GITHUB_PATH}"
+            )
+
+            # -------------------------------------------------
+            # Сначала получаем актуальный SHA файла
+            # -------------------------------------------------
+
+            get_response = requests.get(
+                url,
+                headers=github_headers(),
+                params={
+                    "ref": GITHUB_BRANCH
+                },
+                timeout=30
+            )
+
+            sha = None
+
+            if get_response.status_code == 200:
+
+                current_data = (
+                    get_response.json()
+                )
+
+                sha = current_data.get(
+                    "sha"
+                )
+
+            elif get_response.status_code != 404:
+
+                print(
+                    "GitHub GET error:",
+                    get_response.status_code,
+                    get_response.text
+                )
+
+                return False
+
+            # -------------------------------------------------
+            # Формируем JSON
+            # -------------------------------------------------
+
+            content = json.dumps(
+                products,
+                ensure_ascii=False,
+                indent=2
+            )
+
+            encoded_content = base64.b64encode(
+                content.encode("utf-8")
+            ).decode("ascii")
+
+            payload = {
+                "message": (
+                    "Update products.json "
+                    "(Peony Monitor)"
+                ),
+
+                "content": encoded_content,
+
+                "branch": GITHUB_BRANCH,
+            }
+
+            # SHA нужен при обновлении существующего файла
+
+            if sha:
+                payload["sha"] = sha
+
+            # -------------------------------------------------
+            # PUT
+            # -------------------------------------------------
+
+            response = requests.put(
+                url,
+                headers=github_headers(),
+                json=payload,
+                timeout=30
+            )
+
+            if response.status_code in (
+                200,
+                201
+            ):
+
+                print(
+                    "GitHub: products.json успешно сохранён."
+                )
+
+                return True
+
+            # -------------------------------------------------
+            # Конфликт SHA
+            # -------------------------------------------------
+
+            if response.status_code == 409:
+
+                print(
+                    "GitHub: конфликт SHA. "
+                    "Повторяю синхронизацию."
+                )
+
+                get_response = requests.get(
+                    url,
+                    headers=github_headers(),
+                    params={
+                        "ref": GITHUB_BRANCH
+                    },
+                    timeout=30
+                )
+
+                if get_response.status_code != 200:
+
+                    print(
+                        "Не удалось получить новый SHA."
+                    )
+
+                    return False
+
+                new_sha = (
+                    get_response.json().get(
+                        "sha"
+                    )
+                )
+
+                if not new_sha:
+
+                    return False
+
+                payload["sha"] = new_sha
+
+                retry = requests.put(
+                    url,
+                    headers=github_headers(),
+                    json=payload,
+                    timeout=30
+                )
+
+                if retry.status_code in (
+                    200,
+                    201
+                ):
+
+                    print(
+                        "GitHub: повторное сохранение успешно."
+                    )
+
+                    return True
+
+                print(
+                    "GitHub retry error:",
+                    retry.status_code,
+                    retry.text
+                )
+
+                return False
+
+            print(
+                "GitHub PUT error:",
+                response.status_code,
+                response.text
+            )
+
+            return False
+
+        except Exception as error:
+
+            print(
+                "Ошибка сохранения в GitHub:",
+                repr(error)
+            )
+
+            return False
 
 
-def load_state():
+# =========================================================
+# ЛОКАЛЬНОЕ СОХРАНЕНИЕ
+# =========================================================
 
-    content, sha = github_get_file(
-        STATE_FILE
-    )
-
-    if content is None:
-
-        return {
-            "telegram_offset": 0
-        }
+def save_local_products(
+    products
+):
 
     try:
 
-        state = json.loads(content)
+        os.makedirs(
+            DATA_DIR,
+            exist_ok=True
+        )
 
-        if not isinstance(state, dict):
+        temporary_file = (
+            DATA_FILE + ".tmp"
+        )
 
-            return {
-                "telegram_offset": 0
-            }
+        with open(
+            temporary_file,
+            "w",
+            encoding="utf-8"
+        ) as f:
 
-        return state
+            json.dump(
+                products,
+                f,
+                ensure_ascii=False,
+                indent=2
+            )
 
-    except Exception:
+        os.replace(
+            temporary_file,
+            DATA_FILE
+        )
 
-        return {
-            "telegram_offset": 0
-        }
+        return True
+
+    except Exception as error:
+
+        print(
+            "Ошибка локального сохранения:",
+            repr(error)
+        )
+
+        return False
 
 
-def save_state(state):
+# =========================================================
+# ОБЩЕЕ СОХРАНЕНИЕ
+# =========================================================
 
-    content, sha = github_get_file(
-        STATE_FILE
+def save_products(
+    products
+):
+
+    # Сначала локально
+    save_local_products(
+        products
     )
 
-    github_save_file(
-        STATE_FILE,
+    # Затем GitHub
+    github_save_products(
+        products
+    )
+
+
+# =========================================================
+# ЗАГРУЗКА ТОВАРОВ
+# =========================================================
+
+def load_products():
+
+    os.makedirs(
+        DATA_DIR,
+        exist_ok=True
+    )
+
+    # =====================================================
+    # 1. СНАЧАЛА GITHUB
+    # =====================================================
+
+    github_products = (
+        github_get_products()
+    )
+
+    if github_products is not None:
+
+        # Сохраняем также локально
+        save_local_products(
+            github_products
+        )
+
+        print(
+            "Используем список товаров из GitHub."
+        )
+
+        return github_products
+
+    # =====================================================
+    # 2. ЕСЛИ GITHUB НЕДОСТУПЕН — ЛОКАЛЬНЫЙ ФАЙЛ
+    # =====================================================
+
+    if os.path.exists(
+        DATA_FILE
+    ):
+
+        try:
+
+            with open(
+                DATA_FILE,
+                "r",
+                encoding="utf-8"
+            ) as f:
+
+                products = json.load(
+                    f
+                )
+
+            if not isinstance(
+                products,
+                dict
+            ):
+
+                raise ValueError(
+                    "products.json должен содержать объект."
+                )
+
+            print(
+                f"Локально загружено товаров: "
+                f"{len(products)}"
+            )
+
+            return products
+
+        except Exception as error:
+
+            print(
+                "Ошибка чтения локального products.json:",
+                repr(error)
+            )
+
+    # =====================================================
+    # 3. ЕСЛИ НИЧЕГО НЕТ — НАЧАЛЬНЫЕ ТОВАРЫ
+    # =====================================================
+
+    products = json.loads(
         json.dumps(
-            state,
-            ensure_ascii=False,
-            indent=2
-        ),
-        sha=sha,
-        message="Update bot state",
+            DEFAULT_PRODUCTS,
+            ensure_ascii=False
+        )
     )
 
+    save_products(
+        products
+    )
+
+    print(
+        "Создан начальный список товаров."
+    )
+
+    return products
+
 
 # =========================================================
-# TELEGRAM
+# TELEGRAM API
 # =========================================================
 
-def telegram_request(method, data=None):
+def telegram_request(
+    method,
+    data=None
+):
 
     url = (
         "https://api.telegram.org/"
@@ -271,10 +595,8 @@ def telegram_request(method, data=None):
     response = requests.post(
         url,
         data=data or {},
-        timeout=35,
+        timeout=35
     )
-
-    response.raise_for_status()
 
     return response.json()
 
@@ -321,7 +643,53 @@ def send_telegram(
         return None
 
 
-def answer_callback(callback_id):
+def edit_telegram_message(
+    message_id,
+    text,
+    reply_markup=None
+):
+
+    data = {
+        "chat_id": CHAT_ID,
+        "message_id": message_id,
+        "text": text,
+        "disable_web_page_preview": True,
+    }
+
+    if reply_markup is not None:
+
+        data["reply_markup"] = json.dumps(
+            reply_markup,
+            ensure_ascii=False
+        )
+
+    try:
+
+        result = telegram_request(
+            "editMessageText",
+            data
+        )
+
+        print(
+            "Telegram edit:",
+            result
+        )
+
+        return result
+
+    except Exception as error:
+
+        print(
+            "Telegram edit error:",
+            repr(error)
+        )
+
+        return None
+
+
+def answer_callback(
+    callback_id
+):
 
     try:
 
@@ -341,7 +709,7 @@ def answer_callback(callback_id):
 
 
 # =========================================================
-# TELEGRAM КЛАВИАТУРЫ
+# НИЖНЯЯ КНОПКА TELEGRAM
 # =========================================================
 
 def bottom_menu_keyboard():
@@ -359,6 +727,10 @@ def bottom_menu_keyboard():
     }
 
 
+# =========================================================
+# ГЛАВНОЕ МЕНЮ
+# =========================================================
+
 def main_menu():
 
     return {
@@ -368,29 +740,23 @@ def main_menu():
                 {
                     "text": "📋 Мої півонії",
                     "callback_data": "list"
-                }
-            ],
+                },
 
-            [
                 {
-                    "text": "➕ Додати півонію",
+                    "text": "➕ Додати",
                     "callback_data": "add_help"
-                }
-            ],
+                },
 
-            [
                 {
-                    "text": "🔄 Перевірити всі",
+                    "text": "🔄 Всі",
                     "callback_data": "check_all"
-                }
-            ],
+                },
 
-            [
                 {
-                    "text": "🔍 Перевірити півонію",
+                    "text": "🔍 Перевірити",
                     "callback_data": "check_choose"
                 }
-            ],
+            ]
 
         ]
     }
@@ -404,17 +770,14 @@ def show_main_menu():
         main_menu()
     )
 
-    send_telegram(
-        "⬇️ Головне меню",
-        bottom_menu_keyboard()
-    )
-
 
 # =========================================================
-# САЙТ
+# НАЗВА САЙТА З URL
 # =========================================================
 
-def get_site_name(url):
+def get_site_name(
+    url
+):
 
     match = re.search(
         r"https?://(?:www\.)?([^./]+)",
@@ -433,7 +796,9 @@ def get_site_name(url):
 # СТАТУС
 # =========================================================
 
-def status_icon(status):
+def status_icon(
+    status
+):
 
     if status == "in":
         return "🟢"
@@ -444,7 +809,9 @@ def status_icon(status):
     return "🟡"
 
 
-def status_text(status):
+def status_text(
+    status
+):
 
     if status == "in":
         return "В НАЯВНОСТІ"
@@ -456,7 +823,7 @@ def status_text(status):
 
 
 # =========================================================
-# КНОПКИ
+# КНОПКИ ТОВАРУ
 # =========================================================
 
 def product_keyboard(
@@ -466,6 +833,7 @@ def product_keyboard(
 
     return {
         "inline_keyboard": [
+
             [
                 {
                     "text": "🛒 Товар",
@@ -484,14 +852,22 @@ def product_keyboard(
                         f"remove:{product_id}"
                 }
             ]
+
         ]
     }
 
 
-def delete_confirmation_keyboard(product_id):
+# =========================================================
+# ПОДТВЕРЖДЕНИЕ УДАЛЕНИЯ
+# =========================================================
+
+def delete_confirmation_keyboard(
+    product_id
+):
 
     return {
         "inline_keyboard": [
+
             [
                 {
                     "text": "✅ Видалити",
@@ -505,11 +881,18 @@ def delete_confirmation_keyboard(product_id):
                         f"remove_cancel:{product_id}"
                 }
             ]
+
         ]
     }
 
 
-def choose_product_keyboard(products):
+# =========================================================
+# ВЫБОР ТОВАРА
+# =========================================================
+
+def choose_product_keyboard(
+    products
+):
 
     rows = []
 
@@ -545,10 +928,12 @@ def choose_product_keyboard(products):
 
 
 # =========================================================
-# НАЗВА
+# НАЗВАНИЕ ТОВАРА
 # =========================================================
 
-async def get_product_name(page):
+async def get_product_name(
+    page
+):
 
     try:
 
@@ -575,12 +960,15 @@ async def get_product_name(page):
 
 
 # =========================================================
-# BROWSER
+# BROWSER MANAGER
 # =========================================================
 
 class BrowserManager:
 
-    def __init__(self, playwright):
+    def __init__(
+        self,
+        playwright
+    ):
 
         self.playwright = playwright
 
@@ -589,7 +977,9 @@ class BrowserManager:
         self.lock = asyncio.Lock()
 
 
-    async def ensure_browser(self):
+    async def ensure_browser(
+        self
+    ):
 
         async with self.lock:
 
@@ -609,34 +999,56 @@ class BrowserManager:
                 "Запускаю Chromium..."
             )
 
-            self.browser = await (
-                self.playwright.chromium.launch(
-                    headless=True,
-                    args=[
-                        "--disable-dev-shm-usage",
-                        "--no-sandbox",
-                        "--disable-gpu",
-                        "--disable-software-rasterizer",
-                    ]
+            try:
+
+                self.browser = await (
+                    self.playwright.chromium.launch(
+                        headless=True,
+                        args=[
+                            "--disable-dev-shm-usage",
+                            "--no-sandbox",
+                            "--disable-gpu",
+                            "--disable-software-rasterizer",
+                        ]
+                    )
                 )
-            )
 
-            print(
-                "Chromium запущен."
-            )
+                print(
+                    "Chromium запущен."
+                )
 
-            return self.browser
+                return self.browser
+
+            except Exception as error:
+
+                print(
+                    "Не удалось запустить Chromium:",
+                    repr(error)
+                )
+
+                self.browser = None
+
+                raise
 
 
-    async def new_page(self):
+    async def new_page(
+        self
+    ):
 
         browser = await self.ensure_browser()
 
         try:
 
-            return await browser.new_page()
+            page = await browser.new_page()
 
-        except Exception:
+            return page
+
+        except Exception as error:
+
+            print(
+                "Не удалось создать страницу:",
+                repr(error)
+            )
 
             await self.restart()
 
@@ -645,7 +1057,9 @@ class BrowserManager:
             return await browser.new_page()
 
 
-    async def restart(self):
+    async def restart(
+        self
+    ):
 
         async with self.lock:
 
@@ -666,7 +1080,9 @@ class BrowserManager:
             self.browser = None
 
 
-    async def close(self):
+    async def close(
+        self
+    ):
 
         async with self.lock:
 
@@ -687,7 +1103,9 @@ class BrowserManager:
 # GRAEFSWINNING
 # =========================================================
 
-async def get_main_product_area(page):
+async def get_main_product_area(
+    page
+):
 
     selectors = [
 
@@ -744,7 +1162,9 @@ async def get_main_product_area(page):
     return None
 
 
-async def check_graefswinning(page):
+async def check_graefswinning(
+    page
+):
 
     product_area = await get_main_product_area(
         page
@@ -841,7 +1261,9 @@ async def check_graefswinning(page):
 # PIVOINES RIVIÈRE
 # =========================================================
 
-async def check_pivoines_riviere(page):
+async def check_pivoines_riviere(
+    page
+):
 
     text = await page.locator(
         "body"
@@ -908,7 +1330,9 @@ async def check_pivoines_riviere(page):
 # PAEONIA MIELY
 # =========================================================
 
-async def check_paeonia_miely(page):
+async def check_paeonia_miely(
+    page
+):
 
     text = await page.locator(
         "body"
@@ -1117,12 +1541,19 @@ async def check_product(
         )
 
         if (
-            "TargetClosedError" in error_text
+            "TargetClosedError"
+            in error_text
             or
-            "Page crashed" in error_text
+            "Page crashed"
+            in error_text
             or
-            "Browser has been closed" in error_text
+            "Browser has been closed"
+            in error_text
         ):
+
+            print(
+                "Виявлено падіння Chromium."
+            )
 
             try:
 
@@ -1151,10 +1582,12 @@ async def check_product(
 
 
 # =========================================================
-# СПИСОК
+# ПОКАЗ СПИСКУ
 # =========================================================
 
-def send_product_list(products):
+def send_product_list(
+    products
+):
 
     if not products:
 
@@ -1250,8 +1683,11 @@ async def add_product(
         if page is not None:
 
             try:
+
                 await page.close()
+
             except Exception:
+
                 pass
 
     if status in (
@@ -1259,7 +1695,9 @@ async def add_product(
         "error"
     ):
 
-        site = get_site_name(url)
+        site = get_site_name(
+            url
+        )
 
         send_telegram(
 
@@ -1272,20 +1710,30 @@ async def add_product(
             main_menu()
         )
 
-        return False
+        return
 
     numbers = []
 
     for key in products:
 
         try:
-            numbers.append(int(key))
+
+            numbers.append(
+                int(key)
+            )
+
         except Exception:
+
             pass
 
     product_id = (
-        str(max(numbers) + 1)
+
+        str(
+            max(numbers) + 1
+        )
+
         if numbers
+
         else "1"
     )
 
@@ -1299,11 +1747,25 @@ async def add_product(
 
     }
 
-    icon = status_icon(status)
+    # =====================================================
+    # СРАЗУ СОХРАНЯЕМ В GITHUB
+    # =====================================================
 
-    site = get_site_name(url)
+    save_products(
+        products
+    )
 
-    product = products[product_id]
+    icon = status_icon(
+        status
+    )
+
+    site = get_site_name(
+        url
+    )
+
+    product = products[
+        product_id
+    ]
 
     send_telegram(
 
@@ -1320,11 +1782,9 @@ async def add_product(
         )
     )
 
-    return True
-
 
 # =========================================================
-# CALLBACK
+# CALLBACK КНОПКИ
 # =========================================================
 
 async def handle_callback(
@@ -1340,33 +1800,62 @@ async def handle_callback(
         ""
     )
 
+    message = callback.get(
+        "message"
+    )
+
+    message_id = None
+
+    if message:
+
+        message_id = message.get(
+            "message_id"
+        )
+
     answer_callback(
         callback_id
     )
 
-    # -----------------------------------------------------
-    # MENU
-    # -----------------------------------------------------
+    # =====================================================
+    # МЕНЮ
+    # =====================================================
 
     if data == "menu":
 
-        show_main_menu()
+        if message_id:
 
-        return True
+            edit_telegram_message(
 
-    # -----------------------------------------------------
-    # LIST
-    # -----------------------------------------------------
+                message_id,
+
+                "🌸 PEONY MONITOR\n\n"
+                "Оберіть дію:",
+
+                main_menu()
+
+            )
+
+        else:
+
+            show_main_menu()
+
+        return
+
+    # =====================================================
+    # СПИСОК
+    # =====================================================
 
     if data == "list":
 
-        send_product_list(products)
+        send_product_list(
+            products
+        )
 
-        return False
+        return
 
-    # -----------------------------------------------------
-    # ADD HELP
-    # -----------------------------------------------------
+    # =====================================================
+    # ДОБАВИТЬ
+    # =====================================================
 
     if data == "add_help":
 
@@ -1381,11 +1870,11 @@ async def handle_callback(
             main_menu()
         )
 
-        return False
+        return
 
-    # -----------------------------------------------------
-    # CHOOSE
-    # -----------------------------------------------------
+    # =====================================================
+    # ВЫБОР ПИОНА
+    # =====================================================
 
     if data == "check_choose":
 
@@ -1396,18 +1885,22 @@ async def handle_callback(
                 main_menu()
             )
 
-            return False
+            return
 
         send_telegram(
+
             "🔍 Оберіть півонію:",
-            choose_product_keyboard(products)
+
+            choose_product_keyboard(
+                products
+            )
         )
 
-        return False
+        return
 
-    # -----------------------------------------------------
-    # CHECK ALL
-    # -----------------------------------------------------
+    # =====================================================
+    # ПРОВЕРИТЬ ВСЕ
+    # =====================================================
 
     if data == "check_all":
 
@@ -1415,9 +1908,59 @@ async def handle_callback(
             "🔄 Перевіряю всі півонії..."
         )
 
-        await check_all_products(
-            products,
-            browser_manager
+        for product_id, product in list(
+            products.items()
+        ):
+
+            try:
+
+                status, reason = await check_product(
+                    browser_manager,
+                    product
+                )
+
+                if status in (
+                    "unknown",
+                    "error"
+                ):
+
+                    continue
+
+                previous_status = product.get(
+                    "status"
+                )
+
+                product["status"] = status
+
+                if (
+                    previous_status == "out"
+                    and status == "in"
+                ):
+
+                    send_telegram(
+
+                        f"🟢 {product['name']}\n"
+                        f"🌐 {get_site_name(product['url'])}\n\n"
+                        f"З'ЯВИЛАСЯ У ПРОДАЖУ!\n\n"
+                        f"{reason}",
+
+                        product_keyboard(
+                            product_id,
+                            product
+                        )
+                    )
+
+            except Exception as error:
+
+                print(
+                    "Ошибка callback check_all:",
+                    repr(error)
+                )
+
+                continue
+
+        save_products(
+            products
         )
 
         send_telegram(
@@ -1425,11 +1968,11 @@ async def handle_callback(
             main_menu()
         )
 
-        return True
+        return
 
-    # -----------------------------------------------------
-    # CHECK ONE
-    # -----------------------------------------------------
+    # =====================================================
+    # ПРОВЕРИТЬ ОДИН
+    # =====================================================
 
     if data.startswith("check:"):
 
@@ -1445,9 +1988,11 @@ async def handle_callback(
                 main_menu()
             )
 
-            return False
+            return
 
-        product = products[product_id]
+        product = products[
+            product_id
+        ]
 
         send_telegram(
             f"🔍 Перевіряю:\n"
@@ -1459,12 +2004,31 @@ async def handle_callback(
             product
         )
 
-        if status not in (
+        if status in (
             "unknown",
             "error"
         ):
 
-            product["status"] = status
+            send_telegram(
+
+                f"🟡 {product['name']}\n"
+                f"🌐 {get_site_name(product['url'])}\n\n"
+                f"НЕ ВДАЛОСЯ ВИЗНАЧИТИ\n\n"
+                f"{reason}",
+
+                product_keyboard(
+                    product_id,
+                    product
+                )
+            )
+
+            return
+
+        product["status"] = status
+
+        save_products(
+            products
+        )
 
         send_telegram(
 
@@ -1480,11 +2044,11 @@ async def handle_callback(
             )
         )
 
-        return True
+        return
 
-    # -----------------------------------------------------
-    # REMOVE
-    # -----------------------------------------------------
+    # =====================================================
+    # ЗАПРОС УДАЛЕНИЯ
+    # =====================================================
 
     if data.startswith("remove:"):
 
@@ -1500,9 +2064,11 @@ async def handle_callback(
                 main_menu()
             )
 
-            return False
+            return
 
-        product = products[product_id]
+        product = products[
+            product_id
+        ]
 
         send_telegram(
 
@@ -1515,13 +2081,15 @@ async def handle_callback(
             )
         )
 
-        return False
+        return
 
-    # -----------------------------------------------------
-    # REMOVE CONFIRM
-    # -----------------------------------------------------
+    # =====================================================
+    # ПОДТВЕРЖДЕНИЕ УДАЛЕНИЯ
+    # =====================================================
 
-    if data.startswith("remove_confirm:"):
+    if data.startswith(
+        "remove_confirm:"
+    ):
 
         product_id = data.split(
             ":",
@@ -1535,10 +2103,14 @@ async def handle_callback(
                 main_menu()
             )
 
-            return False
+            return
 
         removed = products.pop(
             product_id
+        )
+
+        save_products(
+            products
         )
 
         send_telegram(
@@ -1549,13 +2121,15 @@ async def handle_callback(
             main_menu()
         )
 
-        return True
+        return
 
-    # -----------------------------------------------------
-    # REMOVE CANCEL
-    # -----------------------------------------------------
+    # =====================================================
+    # ОТМЕНА
+    # =====================================================
 
-    if data.startswith("remove_cancel:"):
+    if data.startswith(
+        "remove_cancel:"
+    ):
 
         product_id = data.split(
             ":",
@@ -1569,9 +2143,11 @@ async def handle_callback(
                 main_menu()
             )
 
-            return False
+            return
 
-        product = products[product_id]
+        product = products[
+            product_id
+        ]
 
         send_telegram(
 
@@ -1584,13 +2160,11 @@ async def handle_callback(
             )
         )
 
-        return False
-
-    return False
+        return
 
 
 # =========================================================
-# ОБЫЧНОЕ СООБЩЕНИЕ
+# ОБЫЧНЫЕ TELEGRAM СООБЩЕНИЯ
 # =========================================================
 
 async def handle_message(
@@ -1604,7 +2178,8 @@ async def handle_message(
     )
 
     if chat_id != CHAT_ID:
-        return False
+
+        return
 
     text = message.get(
         "text",
@@ -1612,36 +2187,47 @@ async def handle_message(
     ).strip()
 
     if not text:
-        return False
 
-    # -----------------------------------------------------
-    # MENU
-    # -----------------------------------------------------
+        return
+
+    # =====================================================
+    # ГЛАВНОЕ МЕНЮ
+    # =====================================================
 
     if text in (
         "/start",
         "🌸 Головне меню"
     ):
 
-        show_main_menu()
+        send_telegram(
 
-        return False
+            "🌸 PEONY MONITOR\n\n"
+            "Оберіть потрібну дію:",
 
-    # -----------------------------------------------------
+            main_menu()
+        )
+
+        return
+
+    # =====================================================
     # LIST
-    # -----------------------------------------------------
+    # =====================================================
 
     if text == "/list":
 
-        send_product_list(products)
+        send_product_list(
+            products
+        )
 
-        return False
+        return
 
-    # -----------------------------------------------------
+    # =====================================================
     # REMOVE
-    # -----------------------------------------------------
+    # =====================================================
 
-    if text.startswith("/remove"):
+    if text.startswith(
+        "/remove"
+    ):
 
         parts = text.split()
 
@@ -1653,7 +2239,7 @@ async def handle_message(
                 main_menu()
             )
 
-            return False
+            return
 
         product_id = parts[1]
 
@@ -1664,9 +2250,11 @@ async def handle_message(
                 main_menu()
             )
 
-            return False
+            return
 
-        product = products[product_id]
+        product = products[
+            product_id
+        ]
 
         send_telegram(
 
@@ -1679,13 +2267,15 @@ async def handle_message(
             )
         )
 
-        return False
+        return
 
-    # -----------------------------------------------------
+    # =====================================================
     # CHECK
-    # -----------------------------------------------------
+    # =====================================================
 
-    if text.startswith("/check"):
+    if text.startswith(
+        "/check"
+    ):
 
         parts = text.split()
 
@@ -1697,7 +2287,7 @@ async def handle_message(
                 main_menu()
             )
 
-            return False
+            return
 
         product_id = parts[1]
 
@@ -1708,9 +2298,11 @@ async def handle_message(
                 main_menu()
             )
 
-            return False
+            return
 
-        product = products[product_id]
+        product = products[
+            product_id
+        ]
 
         send_telegram(
             f"🔍 Перевіряю:\n"
@@ -1729,6 +2321,10 @@ async def handle_message(
 
             product["status"] = status
 
+            save_products(
+                products
+            )
+
         send_telegram(
 
             f"{status_icon(status)} "
@@ -1743,13 +2339,15 @@ async def handle_message(
             )
         )
 
-        return True
+        return
 
-    # -----------------------------------------------------
+    # =====================================================
     # ADD
-    # -----------------------------------------------------
+    # =====================================================
 
-    if text.startswith("/add"):
+    if text.startswith(
+        "/add"
+    ):
 
         parts = text.split(
             maxsplit=1
@@ -1760,13 +2358,13 @@ async def handle_message(
             send_telegram(
 
                 "Надішліть URL після /add.\n\n"
-                "Або просто надішліть URL "
+                "Або просто надішліть мені URL "
                 "без команди.",
 
                 main_menu()
             )
 
-            return False
+            return
 
         url = parts[1].strip()
 
@@ -1775,17 +2373,17 @@ async def handle_message(
             "Відкриваю сторінку та перевіряю..."
         )
 
-        added = await add_product(
+        await add_product(
             url,
             products,
             browser_manager
         )
 
-        return added
+        return
 
-    # -----------------------------------------------------
-    # URL
-    # -----------------------------------------------------
+    # =====================================================
+    # ПРОСТОЙ URL
+    # =====================================================
 
     if (
         text.startswith("http://")
@@ -1798,286 +2396,338 @@ async def handle_message(
             "Відкриваю сторінку та перевіряю..."
         )
 
-        added = await add_product(
+        await add_product(
             text,
             products,
             browser_manager
         )
 
-        return added
-
-    return False
+        return
 
 
 # =========================================================
-# TELEGRAM UPDATES
+# TELEGRAM LISTENER
 # =========================================================
 
-async def process_telegram_updates(
-    products,
-    browser_manager,
-    state
-):
-
-    offset = int(
-        state.get(
-            "telegram_offset",
-            0
-        )
-    )
-
-    changed = False
-
-    try:
-
-        result = await asyncio.to_thread(
-
-            telegram_request,
-
-            "getUpdates",
-
-            {
-                "offset": offset,
-
-                "timeout": 1,
-
-                "allowed_updates":
-                    json.dumps([
-                        "message",
-                        "callback_query"
-                    ])
-            }
-        )
-
-    except Exception as error:
-
-        print(
-            "Telegram getUpdates error:",
-            repr(error)
-        )
-
-        return changed
-
-    if not result.get("ok"):
-
-        print(
-            "Telegram API error:",
-            result
-        )
-
-        return changed
-
-    updates = result.get(
-        "result",
-        []
-    )
-
-    for update in updates:
-
-        update_id = update["update_id"]
-
-        state["telegram_offset"] = (
-            update_id + 1
-        )
-
-        callback = update.get(
-            "callback_query"
-        )
-
-        if callback:
-
-            try:
-
-                callback_message = callback.get(
-                    "message"
-                )
-
-                if callback_message:
-
-                    callback_chat_id = str(
-                        callback_message["chat"]["id"]
-                    )
-
-                    if callback_chat_id == CHAT_ID:
-
-                        result_changed = (
-                            await handle_callback(
-                                callback,
-                                products,
-                                browser_manager
-                            )
-                        )
-
-                        if result_changed:
-                            changed = True
-
-            except Exception as error:
-
-                print(
-                    "Callback error:",
-                    repr(error)
-                )
-
-            continue
-
-        message = update.get(
-            "message"
-        )
-
-        if message:
-
-            try:
-
-                result_changed = (
-                    await handle_message(
-                        message,
-                        products,
-                        browser_manager
-                    )
-                )
-
-                if result_changed:
-                    changed = True
-
-            except Exception as error:
-
-                print(
-                    "Message handler error:",
-                    repr(error)
-                )
-
-    return changed
-
-
-# =========================================================
-# ПРОВЕРКА ВСЕХ
-# =========================================================
-
-async def check_all_products(
+async def telegram_listener(
     products,
     browser_manager
 ):
 
-    for product_id, product in list(
-        products.items()
-    ):
+    offset = 0
 
-        print()
-        print(
-            "================================"
-        )
+    print(
+        "Telegram listener запущено."
+    )
 
-        print(
-            "Перевірка:",
-            product_id,
-            product["name"]
-        )
+    send_telegram(
+
+        "🌸 PEONY MONITOR\n\n"
+        "Бот запущено.\n"
+        "Оберіть потрібну дію:",
+
+        main_menu()
+    )
+
+    while True:
 
         try:
 
-            status, reason = await check_product(
-                browser_manager,
-                product
+            result = await asyncio.to_thread(
+
+                telegram_request,
+
+                "getUpdates",
+
+                {
+                    "offset": offset,
+
+                    "timeout": 25,
+
+                    "allowed_updates":
+                        json.dumps([
+                            "message",
+                            "callback_query"
+                        ])
+                }
+            )
+
+            if not result.get("ok"):
+
+                print(
+                    "Telegram API error:",
+                    result
+                )
+
+                await asyncio.sleep(
+                    5
+                )
+
+                continue
+
+            updates = result.get(
+                "result",
+                []
+            )
+
+            for update in updates:
+
+                offset = (
+                    update["update_id"] + 1
+                )
+
+                callback = update.get(
+                    "callback_query"
+                )
+
+                if callback:
+
+                    try:
+
+                        callback_message = (
+                            callback.get("message")
+                        )
+
+                        if callback_message:
+
+                            callback_chat_id = str(
+                                callback_message[
+                                    "chat"
+                                ]["id"]
+                            )
+
+                            if (
+                                callback_chat_id
+                                == CHAT_ID
+                            ):
+
+                                await handle_callback(
+                                    callback,
+                                    products,
+                                    browser_manager
+                                )
+
+                    except Exception as error:
+
+                        print(
+                            "Callback error:",
+                            repr(error)
+                        )
+
+                    continue
+
+                message = update.get(
+                    "message"
+                )
+
+                if message:
+
+                    try:
+
+                        print(
+                            "Telegram:",
+                            message.get("text")
+                        )
+
+                        await handle_message(
+                            message,
+                            products,
+                            browser_manager
+                        )
+
+                    except Exception as error:
+
+                        print(
+                            "Message handler error:",
+                            repr(error)
+                        )
+
+        except Exception as error:
+
+            print(
+                "Telegram listener error:",
+                repr(error)
+            )
+
+            await asyncio.sleep(
+                5
+            )
+
+
+# =========================================================
+# МОНИТОРИНГ
+# =========================================================
+
+async def monitor_products(
+    products,
+    browser_manager
+):
+
+    print(
+        "Моніторинг товарів запущено."
+    )
+
+    print(
+        "Інтервал перевірки:",
+        CHECK_INTERVAL,
+        "секунд (5 хвилин)"
+    )
+
+    while True:
+
+        for product_id, product in list(
+            products.items()
+        ):
+
+            print()
+            print(
+                "================================"
             )
 
             print(
-                "STATUS:",
-                status
+                "Перевірка:",
+                product_id,
+                product["name"]
             )
 
-            print(
-                "REASON:",
-                reason
+            try:
+
+                status, reason = await check_product(
+                    browser_manager,
+                    product
+                )
+
+                print(
+                    "STATUS:",
+                    status
+                )
+
+                print(
+                    "REASON:",
+                    reason
+                )
+
+            except Exception as error:
+
+                print(
+                    "Помилка моніторингу:",
+                    repr(error)
+                )
+
+                continue
+
+            if status in (
+                "unknown",
+                "error"
+            ):
+
+                print(
+                    "Стан не змінюємо."
+                )
+
+                continue
+
+            previous_status = product.get(
+                "status"
+            )
+
+            if previous_status is None:
+
+                product["status"] = status
+
+                print(
+                    "Початковий стан:",
+                    status
+                )
+
+            elif (
+                previous_status == "out"
+                and
+                status == "in"
+            ):
+
+                print(
+                    "‼️ ТОВАР З'ЯВИВСЯ!"
+                )
+
+                send_telegram(
+
+                    f"🟢 {product['name']}\n"
+                    f"🌐 {get_site_name(product['url'])}\n\n"
+                    f"З'ЯВИЛАСЯ У ПРОДАЖУ!\n\n"
+                    f"{reason}",
+
+                    product_keyboard(
+                        product_id,
+                        product
+                    )
+                )
+
+                product["status"] = "in"
+
+            elif (
+                previous_status == "in"
+                and
+                status == "out"
+            ):
+
+                print(
+                    "Товар закінчився."
+                )
+
+                send_telegram(
+
+                    f"🔴 {product['name']}\n"
+                    f"🌐 {get_site_name(product['url'])}\n\n"
+                    f"ЗАКІНЧИЛАСЯ!\n\n"
+                    f"{reason}",
+
+                    product_keyboard(
+                        product_id,
+                        product
+                    )
+                )
+
+                product["status"] = "out"
+
+            else:
+
+                print(
+                    "Стан не змінився."
+                )
+
+        # =================================================
+        # ПОСЛЕ КАЖДОГО ПОЛНОГО ЦИКЛА
+        # СОХРАНЯЕМ В GITHUB
+        # =================================================
+
+        try:
+
+            save_products(
+                products
             )
 
         except Exception as error:
 
             print(
-                "Ошибка:",
+                "Ошибка сохранения products.json:",
                 repr(error)
             )
 
-            continue
+        print()
 
-        if status in (
-            "unknown",
-            "error"
-        ):
-
-            print(
-                "Стан не змінюємо."
-            )
-
-            continue
-
-        previous_status = product.get(
-            "status"
+        print(
+            "Следующая проверка через "
+            "5 минут."
         )
 
-        if previous_status is None:
+        print(
+            "================================"
+        )
 
-            product["status"] = status
-
-            print(
-                "Початковий стан:",
-                status
-            )
-
-        elif (
-            previous_status == "out"
-            and
-            status == "in"
-        ):
-
-            print(
-                "‼️ ТОВАР З'ЯВИВСЯ!"
-            )
-
-            send_telegram(
-
-                f"🟢 {product['name']}\n"
-                f"🌐 {get_site_name(product['url'])}\n\n"
-                f"З'ЯВИЛАСЯ У ПРОДАЖУ!\n\n"
-                f"{reason}",
-
-                product_keyboard(
-                    product_id,
-                    product
-                )
-            )
-
-            product["status"] = "in"
-
-        elif (
-            previous_status == "in"
-            and
-            status == "out"
-        ):
-
-            print(
-                "Товар закінчився."
-            )
-
-            send_telegram(
-
-                f"🔴 {product['name']}\n"
-                f"🌐 {get_site_name(product['url'])}\n\n"
-                f"ЗАКІНЧИЛАСЯ!\n\n"
-                f"{reason}",
-
-                product_keyboard(
-                    product_id,
-                    product
-                )
-            )
-
-            product["status"] = "out"
-
-        else:
-
-            print(
-                "Стан не змінився."
-            )
+        await asyncio.sleep(
+            CHECK_INTERVAL
+        )
 
 
 # =========================================================
@@ -2091,25 +2741,35 @@ async def main():
     )
 
     print(
-        "🌸 PEONY MONITOR"
+        "🌸 PEONY MONITOR BOT"
     )
 
     print(
-        "GitHub Actions запуск"
+        "БОТ ЗАПУЩЕНО"
+    )
+
+    print(
+        "Проверка каждые 5 минут"
     )
 
     print(
         "================================"
     )
 
+    # =====================================================
+    # ЗАГРУЖАЕМ ТОВАРЫ
+    # =====================================================
+
     products = load_products()
 
-    state = load_state()
-
     print(
-        "Telegram offset:",
-        state.get("telegram_offset", 0)
+        "Всего товаров:",
+        len(products)
     )
+
+    # =====================================================
+    # PLAYWRIGHT
+    # =====================================================
 
     async with async_playwright() as playwright:
 
@@ -2119,52 +2779,36 @@ async def main():
 
         try:
 
-            # =================================================
-            # 1. СНАЧАЛА ОБРАБАТЫВАЕМ TELEGRAM
-            # =================================================
+            await asyncio.gather(
 
-            telegram_changed = (
-                await process_telegram_updates(
+                telegram_listener(
                     products,
-                    browser_manager,
-                    state
-                )
-            )
+                    browser_manager
+                ),
 
-            # =================================================
-            # 2. ПРОВЕРЯЕМ ВСЕ ТОВАРЫ
-            # =================================================
-
-            await check_all_products(
-                products,
-                browser_manager
-            )
-
-            # =================================================
-            # 3. СОХРАНЯЕМ ДАННЫЕ
-            # =================================================
-
-            if telegram_changed:
-
-                print(
-                    "Telegram изменил список товаров."
+                monitor_products(
+                    products,
+                    browser_manager
                 )
 
-            save_products(
-                products
             )
 
-            save_state(
-                state
-            )
+        except Exception as error:
 
             print(
-                "Все данные сохранены в GitHub."
+                "Критическая ошибка main:",
+                repr(error)
             )
 
         finally:
 
-            await browser_manager.close()
+            try:
+
+                await browser_manager.close()
+
+            except Exception:
+
+                pass
 
 
 # =========================================================
