@@ -3,8 +3,8 @@ import asyncio
 import json
 import re
 import requests
-from urllib.parse import urlparse
-from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeoutError
+
+from playwright.async_api import async_playwright
 
 
 # =========================================================
@@ -15,93 +15,154 @@ TELEGRAM_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 CHAT_ID = "450401868"
 
 DATA_FILE = "products.json"
+
 CHECK_INTERVAL = 60
+
+PAGE_TIMEOUT = 60000
+
+PAGE_WAIT = 3000
 
 
 # =========================================================
-# ТОВАРЫ
+# НАЧАЛЬНЫЕ ТОВАРЫ
+# =========================================================
+
+DEFAULT_PRODUCTS = {
+    "1": {
+        "name": "ALESIA",
+        "url": "https://pivoinesriviere.com/produit/alesia/",
+        "status": "out",
+    },
+
+    "2": {
+        "name": "Albert CROUSSE",
+        "url": "https://pivoinesriviere.com/produit/albert-crousse/",
+        "status": "in",
+    },
+
+    "3": {
+        "name": "2005_pink_einfach",
+        "url": "https://www.paeoniamiely.com/produkt/05_pink_einfach/",
+        "status": "in",
+    },
+
+    "4": {
+        "name": "Elsa von Brabant_2009_07",
+        "url": "https://www.paeoniamiely.com/produkt/elsa-von-brabant_2009_07/",
+        "status": "out",
+    },
+}
+
+
+# =========================================================
+# PRODUCTS.JSON
 # =========================================================
 
 def load_products():
+
     if not os.path.exists(DATA_FILE):
-        products = {
-            "1": {
-                "name": "ALESIA",
-                "url": "https://pivoinesriviere.com/produit/alesia",
-                "status": "out",
-            },
-            "2": {
-                "name": "Albert CROUSSE",
-                "url": "https://pivoinesriviere.com/produit/albert-crousse",
-                "status": "in",
-            },
-            "3": {
-                "name": "2005_pink_einfach",
-                "url": "https://www.paeoniamiely.com/produkt/05_pink_einfach/",
-                "status": "in",
-            },
-            "4": {
-                "name": "Elsa von Brabant_2009_07",
-                "url": "https://www.paeoniamiely.com/produkt/elsa-von-brabant_2009_07/",
-                "status": "out",
-            },
-        }
+
+        print("products.json не найден.")
+
+        products = dict(DEFAULT_PRODUCTS)
 
         save_products(products)
+
+        print("products.json создан автоматически.")
+
         return products
 
     try:
-        with open(DATA_FILE, "r", encoding="utf-8") as f:
+
+        with open(
+            DATA_FILE,
+            "r",
+            encoding="utf-8"
+        ) as f:
+
             products = json.load(f)
+
+        if not isinstance(products, dict):
+
+            raise ValueError(
+                "products.json должен содержать объект"
+            )
+
+        print(
+            f"Загружено товаров: {len(products)}"
+        )
 
         return products
 
     except Exception as error:
-        print("Ошибка чтения products.json:", repr(error))
-        return {}
+
+        print(
+            "Ошибка чтения products.json:",
+            repr(error)
+        )
+
+        # ВАЖНО:
+        # Не уничтожаем файл автоматически.
+        # Если он повреждён, запускаем начальный список.
+
+        products = dict(DEFAULT_PRODUCTS)
+
+        save_products(products)
+
+        return products
 
 
 def save_products(products):
-    try:
-        with open(DATA_FILE, "w", encoding="utf-8") as f:
-            json.dump(
-                products,
-                f,
-                ensure_ascii=False,
-                indent=2
-            )
-    except Exception as error:
-        print("Ошибка сохранения products.json:", repr(error))
+
+    temporary_file = DATA_FILE + ".tmp"
+
+    with open(
+        temporary_file,
+        "w",
+        encoding="utf-8"
+    ) as f:
+
+        json.dump(
+            products,
+            f,
+            ensure_ascii=False,
+            indent=2
+        )
+
+    os.replace(
+        temporary_file,
+        DATA_FILE
+    )
 
 
 # =========================================================
 # TELEGRAM API
 # =========================================================
 
-def telegram_request(method, data=None):
+def telegram_request(
+    method,
+    data=None
+):
+
     url = (
-        f"https://api.telegram.org/"
+        "https://api.telegram.org/"
         f"bot{TELEGRAM_TOKEN}/{method}"
     )
 
-    try:
-        response = requests.post(
-            url,
-            data=data or {},
-            timeout=30
-        )
+    response = requests.post(
+        url,
+        data=data or {},
+        timeout=35
+    )
 
-        return response.json()
-
-    except Exception as error:
-        print("Telegram API error:", repr(error))
-        return {
-            "ok": False,
-            "error": repr(error)
-        }
+    return response.json()
 
 
-def send_telegram(message, reply_markup=None):
+def send_telegram(
+    message,
+    reply_markup=None
+):
+
     data = {
         "chat_id": CHAT_ID,
         "text": message,
@@ -109,19 +170,34 @@ def send_telegram(message, reply_markup=None):
     }
 
     if reply_markup is not None:
+
         data["reply_markup"] = json.dumps(
             reply_markup,
             ensure_ascii=False
         )
 
-    result = telegram_request(
-        "sendMessage",
-        data
-    )
+    try:
 
-    print("Telegram:", result)
+        result = telegram_request(
+            "sendMessage",
+            data
+        )
 
-    return result
+        print(
+            "Telegram:",
+            result
+        )
+
+        return result
+
+    except Exception as error:
+
+        print(
+            "Telegram send error:",
+            repr(error)
+        )
+
+        return None
 
 
 def edit_telegram_message(
@@ -129,6 +205,7 @@ def edit_telegram_message(
     text,
     reply_markup=None
 ):
+
     data = {
         "chat_id": CHAT_ID,
         "message_id": message_id,
@@ -137,65 +214,143 @@ def edit_telegram_message(
     }
 
     if reply_markup is not None:
+
         data["reply_markup"] = json.dumps(
             reply_markup,
             ensure_ascii=False
         )
 
-    result = telegram_request(
-        "editMessageText",
-        data
-    )
+    try:
 
-    print("Telegram edit:", result)
+        result = telegram_request(
+            "editMessageText",
+            data
+        )
 
-    return result
+        print(
+            "Telegram edit:",
+            result
+        )
+
+        return result
+
+    except Exception as error:
+
+        print(
+            "Telegram edit error:",
+            repr(error)
+        )
+
+        return None
 
 
-def answer_callback(callback_id):
-    telegram_request(
-        "answerCallbackQuery",
-        {
-            "callback_query_id": callback_id
-        }
+def answer_callback(
+    callback_id
+):
+
+    try:
+
+        telegram_request(
+            "answerCallbackQuery",
+            {
+                "callback_query_id": callback_id
+            }
+        )
+
+    except Exception as error:
+
+        print(
+            "Callback answer error:",
+            repr(error)
+        )
+
+
+# =========================================================
+# НИЖНЯ КНОПКА TELEGRAM
+# =========================================================
+
+def bottom_menu_keyboard():
+
+    return {
+        "keyboard": [
+            [
+                {
+                    "text": "🌸 Головне меню"
+                }
+            ]
+        ],
+        "resize_keyboard": True,
+        "is_persistent": True,
+    }
+
+
+# =========================================================
+# ГОЛОВНЕ МЕНЮ
+# =========================================================
+
+def main_menu():
+
+    return {
+        "inline_keyboard": [
+
+            [
+                {
+                    "text": "📋 Мої півонії",
+                    "callback_data": "list"
+                }
+            ],
+
+            [
+                {
+                    "text": "➕ Додати півонію",
+                    "callback_data": "add_help"
+                }
+            ],
+
+            [
+                {
+                    "text": "🔄 Перевірити всі",
+                    "callback_data": "check_all"
+                }
+            ],
+
+            [
+                {
+                    "text": "🔍 Перевірити півонію",
+                    "callback_data": "check_choose"
+                }
+            ],
+
+        ]
+    }
+
+
+def show_main_menu():
+
+    send_telegram(
+        "🌸 PEONY MONITOR\n\n"
+        "Оберіть потрібну дію:",
+        main_menu()
     )
 
 
 # =========================================================
-# НАЗВАНИЕ САЙТА
+# НАЗВА САЙТУ З URL
 # =========================================================
 
 def get_site_name(url):
-    try:
-        hostname = urlparse(url).hostname or ""
-        hostname = hostname.lower()
 
-        if "paeoniamiely" in hostname:
-            return "paeoniamiely"
+    match = re.search(
+        r"https?://(?:www\.)?([^./]+)",
+        url,
+        re.IGNORECASE
+    )
 
-        if "graefswinning" in hostname:
-            return "graefswinning"
+    if match:
 
-        if "pivoinesriviere" in hostname:
-            return "pivoinesriviere"
+        return match.group(1)
 
-        # Универсально:
-        # от // до следующего /
-        clean = re.sub(
-            r"^https?://",
-            "",
-            url,
-            flags=re.IGNORECASE
-        )
-
-        domain = clean.split("/")[0]
-
-        domain = domain.replace("www.", "")
-
-        return domain
-
-    except Exception:
-        return "невідомий сайт"
+    return "невідомий сайт"
 
 
 # =========================================================
@@ -203,114 +358,103 @@ def get_site_name(url):
 # =========================================================
 
 def status_icon(status):
+
     if status == "in":
+
         return "🟢"
 
     if status == "out":
+
         return "🔴"
 
     return "🟡"
 
 
 def status_text(status):
+
     if status == "in":
+
         return "В НАЯВНОСТІ"
 
     if status == "out":
+
         return "НЕМАЄ В НАЯВНОСТІ"
 
     return "НЕ ВДАЛОСЯ ВИЗНАЧИТИ"
 
 
 # =========================================================
-# TELEGRAM КЛАВІАТУРЫ
+# КНОПКИ ТОВАРУ
 # =========================================================
 
-def main_menu():
+def product_keyboard(
+    product_id,
+    product
+):
+
     return {
         "inline_keyboard": [
-            [
-                {
-                    "text": "🌸 Мої півонії",
-                    "callback_data": "list"
-                },
-                {
-                    "text": "➕ Додати",
-                    "callback_data": "add_help"
-                }
-            ],
-            [
-                {
-                    "text": "🔄 Перевірити всі",
-                    "callback_data": "check_all"
-                },
-                {
-                    "text": "🔍 Перевірити",
-                    "callback_data": "check_choose"
-                }
-            ]
-        ]
-    }
 
-
-def bottom_menu():
-    return {
-        "inline_keyboard": [
-            [
-                {
-                    "text": "🌸 Головне меню",
-                    "callback_data": "menu"
-                }
-            ]
-        ]
-    }
-
-
-def product_keyboard(product_id, product):
-    return {
-        "inline_keyboard": [
             [
                 {
                     "text": "🛒 Товар",
                     "url": product["url"]
                 },
+
                 {
                     "text": "🔍 Перевірити",
-                    "callback_data": f"check:{product_id}"
+                    "callback_data":
+                        f"check:{product_id}"
                 },
+
                 {
                     "text": "🗑 Видалити",
-                    "callback_data": f"remove:{product_id}"
-                }
-            ],
-            [
-                {
-                    "text": "🌸 Головне меню",
-                    "callback_data": "menu"
+                    "callback_data":
+                        f"remove:{product_id}"
                 }
             ]
+
         ]
     }
 
 
-def delete_confirmation_keyboard(product_id):
+# =========================================================
+# ПІДТВЕРЖДЕННЯ ВИДАЛЕННЯ
+# =========================================================
+
+def delete_confirmation_keyboard(
+    product_id
+):
+
     return {
         "inline_keyboard": [
+
             [
                 {
-                    "text": "✅ Так",
-                    "callback_data": f"remove_confirm:{product_id}"
+                    "text": "✅ Видалити",
+                    "callback_data":
+                        f"remove_confirm:{product_id}"
                 },
+
                 {
                     "text": "❌ Скасувати",
-                    "callback_data": f"remove_cancel:{product_id}"
+                    "callback_data":
+                        f"remove_cancel:{product_id}"
                 }
             ]
+
         ]
     }
 
 
-def choose_product_keyboard(products):
+# =========================================================
+# ВИБІР ТОВАРУ
+# =========================================================
+
+def choose_product_keyboard(
+    products
+):
+
     rows = []
 
     for product_id, product in products.items():
@@ -322,13 +466,10 @@ def choose_product_keyboard(products):
         rows.append(
             [
                 {
-                    "text": (
-                        f"{icon} "
-                        f"{product['name']}"
-                    ),
-                    "callback_data": (
+                    "text":
+                        f"{icon} {product['name']}",
+                    "callback_data":
                         f"check:{product_id}"
-                    )
                 }
             ]
         )
@@ -336,7 +477,7 @@ def choose_product_keyboard(products):
     rows.append(
         [
             {
-                "text": "🌸 Головне меню",
+                "text": "⬅️ Назад",
                 "callback_data": "menu"
             }
         ]
@@ -348,15 +489,17 @@ def choose_product_keyboard(products):
 
 
 # =========================================================
-# НАЗВАНИЕ ТОВАРА
+# НАЗВА ТОВАРУ
 # =========================================================
 
 async def get_product_name(page):
 
     try:
+
         title = await page.title()
 
         if title:
+
             title = title.strip()
 
             title = re.sub(
@@ -366,74 +509,183 @@ async def get_product_name(page):
                 flags=re.IGNORECASE
             )
 
-            title = re.sub(
-                r"\s*[-|–]\s*Graefs.*$",
-                "",
-                title,
-                flags=re.IGNORECASE
-            )
-
-            return title.strip()
+            return title
 
     except Exception:
+
         pass
 
     return "Невідомий товар"
 
 
 # =========================================================
-# БЕЗОПАСНАЯ ЗАГРУЗКА СТРАНИЦЫ
+# BROWSER MANAGER
 # =========================================================
 
-async def safe_goto(page, url):
+class BrowserManager:
 
-    try:
+    def __init__(
+        self,
+        playwright
+    ):
 
-        await page.goto(
-            url,
-            wait_until="domcontentloaded",
-            timeout=60000
-        )
+        self.playwright = playwright
 
-        await page.wait_for_timeout(3000)
+        self.browser = None
 
-        return True, ""
+        self.lock = asyncio.Lock()
 
-    except Exception as error:
 
-        print(
-            "Ошибка открытия страницы:",
-            repr(error)
-        )
+    async def ensure_browser(self):
 
-        return False, repr(error)
+        async with self.lock:
+
+            if self.browser is not None:
+
+                try:
+
+                    if self.browser.is_connected():
+
+                        return self.browser
+
+                except Exception:
+
+                    pass
+
+            print(
+                "Запускаю Chromium..."
+            )
+
+            try:
+
+                self.browser = await (
+                    self.playwright.chromium.launch(
+                        headless=True,
+                        args=[
+                            "--disable-dev-shm-usage",
+                            "--no-sandbox",
+                            "--disable-gpu",
+                            "--disable-software-rasterizer",
+                        ]
+                    )
+                )
+
+                print(
+                    "Chromium запущен."
+                )
+
+                return self.browser
+
+            except Exception as error:
+
+                print(
+                    "Не удалось запустить Chromium:",
+                    repr(error)
+                )
+
+                self.browser = None
+
+                raise
+
+
+    async def new_page(self):
+
+        browser = await self.ensure_browser()
+
+        try:
+
+            page = await browser.new_page()
+
+            return page
+
+        except Exception as error:
+
+            print(
+                "Не удалось создать страницу:",
+                repr(error)
+            )
+
+            await self.restart()
+
+            browser = await self.ensure_browser()
+
+            return await browser.new_page()
+
+
+    async def restart(self):
+
+        async with self.lock:
+
+            print(
+                "Перезапускаю Chromium..."
+            )
+
+            if self.browser is not None:
+
+                try:
+
+                    await self.browser.close()
+
+                except Exception:
+
+                    pass
+
+            self.browser = None
+
+
+    async def close(self):
+
+        async with self.lock:
+
+            if self.browser is not None:
+
+                try:
+
+                    await self.browser.close()
+
+                except Exception:
+
+                    pass
+
+                self.browser = None
 
 
 # =========================================================
-# GRAEFSWINNING
+# ОСНОВНОЙ БЛОК GRAEFSWINNING
 # =========================================================
 
 async def get_main_product_area(page):
 
     selectors = [
+
         "form.cart",
+
         "form.variations_form",
+
         ".summary",
+
         ".product-summary",
+
         ".product-info",
+
         ".single-product",
+
         "main",
+
     ]
 
     for selector in selectors:
 
         try:
 
-            locator = page.locator(selector)
+            locator = page.locator(
+                selector
+            )
 
             count = await locator.count()
 
             if count == 0:
+
                 continue
 
             for i in range(count):
@@ -443,27 +695,40 @@ async def get_main_product_area(page):
                 try:
 
                     if not await candidate.is_visible():
+
                         continue
 
                     text = await candidate.inner_text()
 
-                    if text and len(text.strip()) > 20:
+                    if (
+                        text
+                        and
+                        len(text.strip()) > 20
+                    ):
+
                         return candidate
 
                 except Exception:
+
                     continue
 
         except Exception:
+
             continue
 
     return None
 
 
-async def check_graefswinning(page):
+async def check_graefswinning(
+    page
+):
 
-    product_area = await get_main_product_area(page)
+    product_area = await get_main_product_area(
+        page
+    )
 
     if product_area is None:
+
         return (
             "unknown",
             "Не знайдено основний блок товару"
@@ -471,37 +736,38 @@ async def check_graefswinning(page):
 
     try:
 
-        product_text = await product_area.inner_text()
+        product_text = await (
+            product_area.inner_text()
+        )
 
-        product_text_lower = product_text.lower()
+        text = product_text.lower()
 
-        # -----------------------------------------
-        # НЕТ В НАЛИЧИИ
-        # -----------------------------------------
+        # НЕМАЄ В НАЯВНОСТІ
 
         unavailable_phrases = [
+
             "this variety is not available",
+
             "this product is not available",
+
             "this variety is unavailable",
-            "not available",
+
         ]
 
         for phrase in unavailable_phrases:
 
-            if phrase in product_text_lower:
+            if phrase in text:
 
                 return (
                     "out",
                     phrase
                 )
 
-        # -----------------------------------------
-        # В НАЛИЧИИ
-        # -----------------------------------------
+        # Є В НАЯВНОСТІ
 
         if (
             "order now for the best selection"
-            in product_text_lower
+            in text
         ):
 
             return (
@@ -509,23 +775,22 @@ async def check_graefswinning(page):
                 "Order now for the best selection"
             )
 
-        # -----------------------------------------
-        # ADD TO CART
-        # -----------------------------------------
+        # Add to cart
 
         buttons = product_area.locator(
             "button, input[type='submit'], a"
         )
 
-        count = await buttons.count()
-
-        for i in range(count):
+        for i in range(
+            await buttons.count()
+        ):
 
             element = buttons.nth(i)
 
             try:
 
                 if not await element.is_visible():
+
                     continue
 
                 element_text = (
@@ -538,10 +803,11 @@ async def check_graefswinning(page):
 
                         return (
                             "in",
-                            "Add to cart доступна"
+                            "Add to cart"
                         )
 
             except Exception:
+
                 continue
 
         return (
@@ -558,214 +824,27 @@ async def check_graefswinning(page):
 
 
 # =========================================================
-# ПРОВЕРКА ТОВАРА
+# ПРОВЕРКА PIVOINES RIVIÈRE
 # =========================================================
 
-async def check_product(page, product):
+async def check_pivoines_riviere(
+    page
+):
 
-    url = product["url"]
+    text = await page.locator(
+        "body"
+    ).inner_text()
 
-    print(
-        "Відкриваю:",
-        url
-    )
-
-    ok, error_text = await safe_goto(
-        page,
-        url
-    )
-
-    if not ok:
-
-        return (
-            "error",
-            error_text
-        )
-
-    try:
-
-        text = await page.locator(
-            "body"
-        ).inner_text()
-
-        text_lower = text.lower()
-
-    except Exception as error:
-
-        return (
-            "error",
-            repr(error)
-        )
-
-    # =====================================================
-    # ЗАХИСТ САЙТУ
-    # =====================================================
-
-    protection_phrases = [
-        "just a moment",
-        "checking your browser",
-        "verify you are human",
-        "cf-chl",
-        "cloudflare",
-    ]
-
-    for phrase in protection_phrases:
-
-        if phrase in text_lower:
-
-            return (
-                "unknown",
-                "Сторінка захисту сайту"
-            )
-
-    # =====================================================
-    # PIVOINES RIVIERE
-    # =====================================================
-
-    if "pivoinesriviere.com" in url.lower():
-
-        out_phrases = [
-            "rupture de stock",
-            "épuisée pour cette année",
-            "notify me when available",
-        ]
-
-        for phrase in out_phrases:
-
-            if phrase.lower() in text_lower:
-
-                return (
-                    "out",
-                    phrase
-                )
-
-        buttons = page.locator(
-            "button, input[type='submit'], a"
-        )
-
-        count = await buttons.count()
-
-        for i in range(count):
-
-            element = buttons.nth(i)
-
-            try:
-
-                if not await element.is_visible():
-                    continue
-
-                element_text = (
-                    await element.inner_text()
-                ).strip().lower()
-
-                if "ajouter au panier" in element_text:
-
-                    if await element.is_enabled():
-
-                        return (
-                            "in",
-                            "Ajouter au panier доступна"
-                        )
-
-            except Exception:
-                continue
-
-        return (
-            "out",
-            "Кнопка покупки недоступна"
-        )
-
-    # =====================================================
-    # PAEONIA MIELY
-    # =====================================================
-
-    if "paeoniamiely.com" in url.lower():
-
-        if "ausverkauft" in text_lower:
-
-            return (
-                "out",
-                "Ausverkauft"
-            )
-
-        if "nicht verfügbar" in text_lower:
-
-            return (
-                "out",
-                "Nicht verfügbar"
-            )
-
-        if "vorrätig" in text_lower:
-
-            return (
-                "in",
-                "Vorrätig"
-            )
-
-        buttons = page.locator(
-            "button, input[type='submit'], a"
-        )
-
-        count = await buttons.count()
-
-        for i in range(count):
-
-            element = buttons.nth(i)
-
-            try:
-
-                if not await element.is_visible():
-                    continue
-
-                element_text = (
-                    await element.inner_text()
-                ).strip().lower()
-
-                if "in den warenkorb" in element_text:
-
-                    if await element.is_enabled():
-
-                        return (
-                            "in",
-                            "In den Warenkorb"
-                        )
-
-            except Exception:
-                continue
-
-        return (
-            "out",
-            "Товар недоступний"
-        )
-
-    # =====================================================
-    # GRAEFSWINNING
-    # =====================================================
-
-    if "graefswinning.be" in url.lower():
-
-        return await check_graefswinning(
-            page
-        )
-
-    # =====================================================
-    # УНИВЕРСАЛЬНЫЙ АЛГОРИТМ
-    # =====================================================
+    text_lower = text.lower()
 
     out_phrases = [
-        "out of stock",
-        "sold out",
-        "unavailable",
-        "out-of-stock",
+
         "rupture de stock",
-        "épuisé",
-        "épuisée",
-        "nicht verfügbar",
-        "ausverkauft",
-        "non disponibile",
-        "esaurito",
-        "нет в наличии",
-        "распродано",
+
+        "épuisée pour cette année",
+
+        "notify me when available",
+
     ]
 
     for phrase in out_phrases:
@@ -777,61 +856,358 @@ async def check_product(page, product):
                 phrase
             )
 
-    in_phrases = [
-        "in stock",
-        "en stock",
-        "available",
-        "add to cart",
-        "ajouter au panier",
-        "add to basket",
-        "add to bag",
-        "in den warenkorb",
-        "auf lager",
-        "vorrätig",
-        "disponible",
-    ]
+    buttons = page.locator(
+        "button, input[type='submit'], a"
+    )
 
-    for phrase in in_phrases:
+    for i in range(
+        await buttons.count()
+    ):
 
-        if phrase in text_lower:
+        element = buttons.nth(i)
 
-            return (
-                "in",
-                phrase
+        try:
+
+            if not await element.is_visible():
+
+                continue
+
+            element_text = (
+                await element.inner_text()
+            ).strip().lower()
+
+            if "ajouter au panier" in element_text:
+
+                if await element.is_enabled():
+
+                    return (
+                        "in",
+                        "Ajouter au panier"
+                    )
+
+        except Exception:
+
+            continue
+
+    return (
+        "out",
+        "Кнопка покупки недоступна"
+    )
+
+
+# =========================================================
+# ПРОВЕРКА PAEONIA MIELY
+# =========================================================
+
+async def check_paeonia_miely(
+    page
+):
+
+    text = await page.locator(
+        "body"
+    ).inner_text()
+
+    text_lower = text.lower()
+
+    if "ausverkauft" in text_lower:
+
+        return (
+            "out",
+            "Ausverkauft"
+        )
+
+    if "nicht verfügbar" in text_lower:
+
+        return (
+            "out",
+            "Nicht verfügbar"
+        )
+
+    if "vorrätig" in text_lower:
+
+        return (
+            "in",
+            "Vorrätig"
+        )
+
+    buttons = page.locator(
+        "button, input[type='submit'], a"
+    )
+
+    for i in range(
+        await buttons.count()
+    ):
+
+        element = buttons.nth(i)
+
+        try:
+
+            if not await element.is_visible():
+
+                continue
+
+            element_text = (
+                await element.inner_text()
+            ).strip().lower()
+
+            if "in den warenkorb" in element_text:
+
+                if await element.is_enabled():
+
+                    return (
+                        "in",
+                        "In den Warenkorb"
+                    )
+
+        except Exception:
+
+            continue
+
+    return (
+        "out",
+        "Товар недоступний"
+    )
+
+
+# =========================================================
+# УНИВЕРСАЛЬНАЯ ПРОВЕРКА
+# =========================================================
+
+async def check_product(
+    browser_manager,
+    product
+):
+
+    url = product["url"]
+
+    page = None
+
+    try:
+
+        print(
+            "Відкриваю:",
+            url
+        )
+
+        page = await browser_manager.new_page()
+
+        await page.goto(
+            url,
+            wait_until="domcontentloaded",
+            timeout=PAGE_TIMEOUT
+        )
+
+        await page.wait_for_timeout(
+            PAGE_WAIT
+        )
+
+        text = await page.locator(
+            "body"
+        ).inner_text()
+
+        text_lower = text.lower()
+
+        # =================================================
+        # ЗАХИСТ САЙТУ
+        # =================================================
+
+        protection_phrases = [
+
+            "just a moment",
+
+            "checking your browser",
+
+            "verify you are human",
+
+            "cf-chl",
+
+            "cloudflare",
+
+        ]
+
+        for phrase in protection_phrases:
+
+            if phrase in text_lower:
+
+                return (
+                    "unknown",
+                    "Сторінка захисту сайту"
+                )
+
+        # =================================================
+        # PIVOINES RIVIÈRE
+        # =================================================
+
+        if "pivoinesriviere.com" in url.lower():
+
+            return await check_pivoines_riviere(
+                page
             )
 
-    return (
-        "unknown",
-        "Не вдалося впевнено визначити"
-    )
+        # =================================================
+        # PAEONIA MIELY
+        # =================================================
+
+        if "paeoniamiely.com" in url.lower():
+
+            return await check_paeonia_miely(
+                page
+            )
+
+        # =================================================
+        # GRAEFSWINNING
+        # =================================================
+
+        if "graefswinning.be" in url.lower():
+
+            return await check_graefswinning(
+                page
+            )
+
+        # =================================================
+        # УНИВЕРСАЛЬНЫЙ АЛГОРИТМ
+        # =================================================
+
+        out_phrases = [
+
+            "out of stock",
+
+            "sold out",
+
+            "unavailable",
+
+            "out-of-stock",
+
+            "rupture de stock",
+
+            "épuisé",
+
+            "épuisée",
+
+            "nicht verfügbar",
+
+            "ausverkauft",
+
+            "non disponibile",
+
+            "esaurito",
+
+            "нет в наличии",
+
+            "распродано",
+
+        ]
+
+        for phrase in out_phrases:
+
+            if phrase in text_lower:
+
+                return (
+                    "out",
+                    phrase
+                )
+
+        in_phrases = [
+
+            "in stock",
+
+            "en stock",
+
+            "available",
+
+            "add to cart",
+
+            "ajouter au panier",
+
+            "add to basket",
+
+            "add to bag",
+
+            "in den warenkorb",
+
+            "auf lager",
+
+            "vorrätig",
+
+            "disponible",
+
+        ]
+
+        for phrase in in_phrases:
+
+            if phrase in text_lower:
+
+                return (
+                    "in",
+                    phrase
+                )
+
+        return (
+            "unknown",
+            "Не вдалося впевнено визначити"
+        )
+
+    except Exception as error:
+
+        error_text = repr(error)
+
+        print(
+            "Помилка перевірки:",
+            error_text
+        )
+
+        # =================================================
+        # КРИТИЧНА ПОМИЛКА PLAYWRIGHT
+        # =================================================
+
+        if (
+            "TargetClosedError"
+            in error_text
+            or
+            "Page crashed"
+            in error_text
+            or
+            "Browser has been closed"
+            in error_text
+        ):
+
+            print(
+                "Виявлено падіння Chromium."
+            )
+
+            try:
+
+                await browser_manager.restart()
+
+            except Exception:
+
+                pass
+
+        return (
+            "error",
+            error_text
+        )
+
+    finally:
+
+        if page is not None:
+
+            try:
+
+                await page.close()
+
+            except Exception:
+
+                pass
 
 
 # =========================================================
-# ТЕКСТ ТОВАРА
+# ПОКАЗ СПИСКУ
 # =========================================================
 
-def product_message(product):
-
-    status = product.get("status")
-
-    icon = status_icon(status)
-
-    site = get_site_name(
-        product["url"]
-    )
-
-    return (
-        f"{icon} {product['name']}\n"
-        f"🌐 {site}\n\n"
-        f"Статус: {status_text(status)}"
-    )
-
-
-# =========================================================
-# СПИСОК
-# =========================================================
-
-def send_product_list(products):
+def send_product_list(
+    products
+):
 
     if not products:
 
@@ -849,8 +1225,23 @@ def send_product_list(products):
 
     for product_id, product in products.items():
 
+        icon = status_icon(
+            product.get("status")
+        )
+
+        site = get_site_name(
+            product["url"]
+        )
+
+        message = (
+            f"{icon} {product['name']}\n"
+            f"🌐 {site}\n\n"
+            f"Статус: "
+            f"{status_text(product.get('status'))}"
+        )
+
         send_telegram(
-            product_message(product),
+            message,
             product_keyboard(
                 product_id,
                 product
@@ -865,35 +1256,79 @@ def send_product_list(products):
 async def add_product(
     url,
     products,
-    page
+    browser_manager
 ):
 
     temporary_product = {
+
         "name": "Новий товар",
+
         "url": url,
+
         "status": None,
+
     }
 
     status, reason = await check_product(
-        page,
+        browser_manager,
         temporary_product
     )
 
-    name = await get_product_name(
-        page
-    )
+    # Для названия нужна отдельная страница
+
+    page = None
+
+    try:
+
+        page = await browser_manager.new_page()
+
+        await page.goto(
+            url,
+            wait_until="domcontentloaded",
+            timeout=PAGE_TIMEOUT
+        )
+
+        await page.wait_for_timeout(
+            1500
+        )
+
+        name = await get_product_name(
+            page
+        )
+
+    except Exception:
+
+        name = "Новий товар"
+
+    finally:
+
+        if page is not None:
+
+            try:
+
+                await page.close()
+
+            except Exception:
+
+                pass
 
     if status in (
         "unknown",
         "error"
     ):
 
+        site = get_site_name(
+            url
+        )
+
         send_telegram(
+
             f"🟡 {name}\n"
-            f"🌐 {get_site_name(url)}\n\n"
+            f"🌐 {site}\n\n"
             f"Не вдалося впевнено визначити наявність.\n"
             f"Причина: {reason}\n\n"
             f"Товар НЕ додано до відстеження.",
+
             main_menu()
         )
 
@@ -904,34 +1339,61 @@ async def add_product(
     for key in products:
 
         try:
+
             numbers.append(
                 int(key)
             )
+
         except Exception:
+
             pass
 
     product_id = (
-        str(max(numbers) + 1)
+
+        str(
+            max(numbers) + 1
+        )
+
         if numbers
+
         else "1"
     )
 
     products[product_id] = {
+
         "name": name,
+
         "url": url,
+
         "status": status,
+
     }
 
-    save_products(products)
+    save_products(
+        products
+    )
+
+    icon = status_icon(
+        status
+    )
+
+    site = get_site_name(
+        url
+    )
 
     product = products[
         product_id
     ]
 
     send_telegram(
-        f"{status_icon(status)} Додано!\n\n"
-        f"{product_message(product)}\n\n"
-        f"Причина: {reason}",
+
+        f"{icon} Додано!\n\n"
+        f"№ {product_id}\n"
+        f"{name}\n"
+        f"🌐 {site}\n\n"
+        f"{status_text(status)}\n"
+        f"{reason}",
+
         product_keyboard(
             product_id,
             product
@@ -940,13 +1402,13 @@ async def add_product(
 
 
 # =========================================================
-# CALLBACK
+# CALLBACK КНОПКИ
 # =========================================================
 
 async def handle_callback(
     callback,
     products,
-    page
+    browser_manager
 ):
 
     callback_id = callback["id"]
@@ -963,6 +1425,7 @@ async def handle_callback(
     message_id = None
 
     if message:
+
         message_id = message.get(
             "message_id"
         )
@@ -972,7 +1435,7 @@ async def handle_callback(
     )
 
     # =====================================================
-    # ГЛАВНОЕ МЕНЮ
+    # МЕНЮ
     # =====================================================
 
     if data == "menu":
@@ -980,11 +1443,19 @@ async def handle_callback(
         if message_id:
 
             edit_telegram_message(
+
                 message_id,
+
                 "🌸 PEONY MONITOR\n\n"
                 "Оберіть дію:",
+
                 main_menu()
+
             )
+
+        else:
+
+            show_main_menu()
 
         return
 
@@ -1007,18 +1478,20 @@ async def handle_callback(
     if data == "add_help":
 
         send_telegram(
+
             "➕ Додати півонію\n\n"
-            "Просто надішліть мені посилання "
-            "на сторінку півонії.\n\n"
-            "Я перевірю наявність і додам "
-            "її до відстеження.",
-            bottom_menu()
+            "Просто надішліть мені URL "
+            "сторінки півонії.\n\n"
+            "Я відкрию сторінку, визначу "
+            "наявність і додам її до відстеження.",
+
+            main_menu()
         )
 
         return
 
     # =====================================================
-    # ВЫБОР ТОВАРА
+    # ВЫБОР ПИОНА
     # =====================================================
 
     if data == "check_choose":
@@ -1033,8 +1506,12 @@ async def handle_callback(
             return
 
         send_telegram(
+
             "🔍 Оберіть півонію:",
-            choose_product_keyboard(products)
+
+            choose_product_keyboard(
+                products
+            )
         )
 
         return
@@ -1046,7 +1523,7 @@ async def handle_callback(
     if data == "check_all":
 
         send_telegram(
-            "🔄 Починаю перевірку всіх півоній..."
+            "🔄 Перевіряю всі півонії..."
         )
 
         for product_id, product in list(
@@ -1056,29 +1533,45 @@ async def handle_callback(
             try:
 
                 status, reason = await check_product(
-                    page,
+                    browser_manager,
                     product
-                )
-
-                print(
-                    "Ручна перевірка:",
-                    product_id,
-                    status,
-                    reason
                 )
 
                 if status in (
                     "unknown",
                     "error"
                 ):
+
                     continue
 
+                previous_status = product.get(
+                    "status"
+                )
+
                 product["status"] = status
+
+                if (
+                    previous_status == "out"
+                    and status == "in"
+                ):
+
+                    send_telegram(
+
+                        f"🟢 {product['name']}\n"
+                        f"🌐 {get_site_name(product['url'])}\n\n"
+                        f"З'ЯВИЛАСЯ У ПРОДАЖУ!\n\n"
+                        f"{reason}",
+
+                        product_keyboard(
+                            product_id,
+                            product
+                        )
+                    )
 
             except Exception as error:
 
                 print(
-                    "Помилка ручної перевірки:",
+                    "Ошибка callback check_all:",
                     repr(error)
                 )
 
@@ -1089,14 +1582,14 @@ async def handle_callback(
         )
 
         send_telegram(
-            "✅ Перевірку всіх півоній завершено.",
+            "✅ Перевірку завершено.",
             main_menu()
         )
 
         return
 
     # =====================================================
-    # CHECK ONE
+    # ПРОВЕРИТЬ ОДИН
     # =====================================================
 
     if data.startswith("check:"):
@@ -1124,17 +1617,10 @@ async def handle_callback(
             f"{product['name']}..."
         )
 
-        try:
-
-            status, reason = await check_product(
-                page,
-                product
-            )
-
-        except Exception as error:
-
-            status = "error"
-            reason = repr(error)
+        status, reason = await check_product(
+            browser_manager,
+            product
+        )
 
         if status in (
             "unknown",
@@ -1142,10 +1628,12 @@ async def handle_callback(
         ):
 
             send_telegram(
+
                 f"🟡 {product['name']}\n"
                 f"🌐 {get_site_name(product['url'])}\n\n"
-                f"Не вдалося впевнено визначити.\n"
-                f"Причина: {reason}",
+                f"НЕ ВДАЛОСЯ ВИЗНАЧИТИ\n\n"
+                f"{reason}",
+
                 product_keyboard(
                     product_id,
                     product
@@ -1161,8 +1649,13 @@ async def handle_callback(
         )
 
         send_telegram(
-            f"{product_message(product)}\n\n"
+
+            f"{status_icon(status)} "
+            f"{product['name']}\n"
+            f"🌐 {get_site_name(product['url'])}\n\n"
+            f"{status_text(status)}\n"
             f"{reason}",
+
             product_keyboard(
                 product_id,
                 product
@@ -1172,7 +1665,7 @@ async def handle_callback(
         return
 
     # =====================================================
-    # REMOVE
+    # ЗАПРОС УДАЛЕНИЯ
     # =====================================================
 
     if data.startswith("remove:"):
@@ -1196,9 +1689,11 @@ async def handle_callback(
         ]
 
         send_telegram(
+
             f"🗑 Видалити\n"
             f"«{product['name']}»\n"
             f"з відстеження?",
+
             delete_confirmation_keyboard(
                 product_id
             )
@@ -1207,10 +1702,12 @@ async def handle_callback(
         return
 
     # =====================================================
-    # REMOVE CONFIRM
+    # ПОДТВЕРЖДЕНИЕ УДАЛЕНИЯ
     # =====================================================
 
-    if data.startswith("remove_confirm:"):
+    if data.startswith(
+        "remove_confirm:"
+    ):
 
         product_id = data.split(
             ":",
@@ -1235,18 +1732,22 @@ async def handle_callback(
         )
 
         send_telegram(
+
             f"🗑 {removed['name']}\n"
-            f"видалено з відстеження.",
+            f"Видалено з відстеження.",
+
             main_menu()
         )
 
         return
 
     # =====================================================
-    # REMOVE CANCEL
+    # ОТМЕНА
     # =====================================================
 
-    if data.startswith("remove_cancel:"):
+    if data.startswith(
+        "remove_cancel:"
+    ):
 
         product_id = data.split(
             ":",
@@ -1267,8 +1768,10 @@ async def handle_callback(
         ]
 
         send_telegram(
+
             f"❌ Видалення скасовано.\n\n"
-            f"{product_message(product)}",
+            f"{product['name']}",
+
             product_keyboard(
                 product_id,
                 product
@@ -1279,13 +1782,13 @@ async def handle_callback(
 
 
 # =========================================================
-# ОБЫЧНЫЕ СООБЩЕНИЯ
+# ОБЫЧНЫЕ TELEGRAM СООБЩЕНИЯ
 # =========================================================
 
 async def handle_message(
     message,
     products,
-    page
+    browser_manager
 ):
 
     chat_id = str(
@@ -1293,6 +1796,7 @@ async def handle_message(
     )
 
     if chat_id != CHAT_ID:
+
         return
 
     text = message.get(
@@ -1301,23 +1805,31 @@ async def handle_message(
     ).strip()
 
     if not text:
+
         return
 
-    # /start
+    # =====================================================
+    # ГЛАВНОЕ МЕНЮ
+    # =====================================================
 
-    if text == "/start":
+    if text in (
+        "/start",
+        "🌸 Головне меню"
+    ):
 
         send_telegram(
+
             "🌸 PEONY MONITOR\n\n"
-            "Бот відстежує наявність півоній "
-            "і повідомляє про зміни.\n\n"
-            "Оберіть дію:",
+            "Оберіть потрібну дію:",
+
             main_menu()
         )
 
         return
 
-    # /list
+    # =====================================================
+    # LIST
+    # =====================================================
 
     if text == "/list":
 
@@ -1327,16 +1839,20 @@ async def handle_message(
 
         return
 
-    # /remove
+    # =====================================================
+    # REMOVE
+    # =====================================================
 
-    if text.startswith("/remove"):
+    if text.startswith(
+        "/remove"
+    ):
 
         parts = text.split()
 
         if len(parts) != 2:
 
             send_telegram(
-                "Напишіть номер півонії.\n"
+                "Напишіть номер.\n"
                 "Наприклад: /remove 2",
                 main_menu()
             )
@@ -1359,9 +1875,11 @@ async def handle_message(
         ]
 
         send_telegram(
+
             f"🗑 Видалити\n"
             f"«{product['name']}»\n"
             f"з відстеження?",
+
             delete_confirmation_keyboard(
                 product_id
             )
@@ -1369,9 +1887,13 @@ async def handle_message(
 
         return
 
-    # /check
+    # =====================================================
+    # CHECK
+    # =====================================================
 
-    if text.startswith("/check"):
+    if text.startswith(
+        "/check"
+    ):
 
         parts = text.split()
 
@@ -1405,45 +1927,30 @@ async def handle_message(
             f"{product['name']}..."
         )
 
-        try:
+        status, reason = await check_product(
+            browser_manager,
+            product
+        )
 
-            status, reason = await check_product(
-                page,
-                product
-            )
-
-        except Exception as error:
-
-            status = "error"
-            reason = repr(error)
-
-        if status in (
+        if status not in (
             "unknown",
             "error"
         ):
 
-            send_telegram(
-                f"🟡 {product['name']}\n"
-                f"🌐 {get_site_name(product['url'])}\n\n"
-                f"Не вдалося впевнено визначити.\n"
-                f"Причина: {reason}",
-                product_keyboard(
-                    product_id,
-                    product
-                )
+            product["status"] = status
+
+            save_products(
+                products
             )
 
-            return
-
-        product["status"] = status
-
-        save_products(
-            products
-        )
-
         send_telegram(
-            f"{product_message(product)}\n\n"
+
+            f"{status_icon(status)} "
+            f"{product['name']}\n"
+            f"🌐 {get_site_name(product['url'])}\n\n"
+            f"{status_text(status)}\n"
             f"{reason}",
+
             product_keyboard(
                 product_id,
                 product
@@ -1452,9 +1959,13 @@ async def handle_message(
 
         return
 
-    # /add
+    # =====================================================
+    # ADD
+    # =====================================================
 
-    if text.startswith("/add"):
+    if text.startswith(
+        "/add"
+    ):
 
         parts = text.split(
             maxsplit=1
@@ -1463,8 +1974,11 @@ async def handle_message(
         if len(parts) != 2:
 
             send_telegram(
-                "Надішліть посилання після /add.\n\n"
-                "Або просто надішліть URL.",
+
+                "Надішліть URL після /add.\n\n"
+                "Або просто надішліть мені URL "
+                "без команди.",
+
                 main_menu()
             )
 
@@ -1480,16 +1994,19 @@ async def handle_message(
         await add_product(
             url,
             products,
-            page
+            browser_manager
         )
 
         return
 
-    # ПРОСТАЯ ССЫЛКА
+    # =====================================================
+    # ПРОСТОЙ URL
+    # =====================================================
 
     if (
         text.startswith("http://")
-        or text.startswith("https://")
+        or
+        text.startswith("https://")
     ):
 
         send_telegram(
@@ -1500,7 +2017,7 @@ async def handle_message(
         await add_product(
             text,
             products,
-            page
+            browser_manager
         )
 
         return
@@ -1512,7 +2029,7 @@ async def handle_message(
 
 async def telegram_listener(
     products,
-    page
+    browser_manager
 ):
 
     offset = 0
@@ -1521,40 +2038,67 @@ async def telegram_listener(
         "Telegram listener запущено."
     )
 
+    # Показываем меню при запуске
+
+    send_telegram(
+
+        "🌸 PEONY MONITOR\n\n"
+        "Бот запущено.\n"
+        "Оберіть потрібну дію:",
+
+        main_menu()
+    )
+
     while True:
 
         try:
 
             result = await asyncio.to_thread(
+
                 telegram_request,
+
                 "getUpdates",
+
                 {
                     "offset": offset,
+
                     "timeout": 25,
+
+                    "allowed_updates":
+                        json.dumps([
+                            "message",
+                            "callback_query"
+                        ])
                 }
             )
 
             if not result.get("ok"):
 
                 print(
-                    "Telegram getUpdates error:",
+                    "Telegram API error:",
                     result
                 )
 
-                await asyncio.sleep(5)
+                await asyncio.sleep(
+                    5
+                )
 
                 continue
 
-            for update in result.get(
+            updates = result.get(
                 "result",
                 []
-            ):
+            )
+
+            for update in updates:
 
                 offset = (
                     update["update_id"] + 1
                 )
 
+                # =========================================
                 # CALLBACK
+                # =========================================
 
                 callback = update.get(
                     "callback_query"
@@ -1562,36 +2106,43 @@ async def telegram_listener(
 
                 if callback:
 
-                    callback_message = callback.get(
-                        "message"
-                    )
+                    try:
 
-                    if callback_message:
-
-                        callback_chat_id = str(
-                            callback_message["chat"]["id"]
+                        callback_message = (
+                            callback.get("message")
                         )
 
-                        if callback_chat_id == CHAT_ID:
+                        if callback_message:
 
-                            try:
+                            callback_chat_id = str(
+                                callback_message[
+                                    "chat"
+                                ]["id"]
+                            )
+
+                            if (
+                                callback_chat_id
+                                == CHAT_ID
+                            ):
 
                                 await handle_callback(
                                     callback,
                                     products,
-                                    page
+                                    browser_manager
                                 )
 
-                            except Exception as error:
+                    except Exception as error:
 
-                                print(
-                                    "Callback error:",
-                                    repr(error)
-                                )
+                        print(
+                            "Callback error:",
+                            repr(error)
+                        )
 
                     continue
 
-                # ОБЫЧНОЕ СООБЩЕНИЕ
+                # =========================================
+                # MESSAGE
+                # =========================================
 
                 message = update.get(
                     "message"
@@ -1599,17 +2150,17 @@ async def telegram_listener(
 
                 if message:
 
-                    print(
-                        "Telegram повідомлення:",
-                        message.get("text")
-                    )
-
                     try:
+
+                        print(
+                            "Telegram:",
+                            message.get("text")
+                        )
 
                         await handle_message(
                             message,
                             products,
-                            page
+                            browser_manager
                         )
 
                     except Exception as error:
@@ -1626,7 +2177,13 @@ async def telegram_listener(
                 repr(error)
             )
 
-            await asyncio.sleep(5)
+            # ВАЖНО:
+            # Telegram не прекращает работу
+            # после ошибки.
+
+            await asyncio.sleep(
+                5
+            )
 
 
 # =========================================================
@@ -1635,7 +2192,7 @@ async def telegram_listener(
 
 async def monitor_products(
     products,
-    browser
+    browser_manager
 ):
 
     print(
@@ -1659,18 +2216,10 @@ async def monitor_products(
                 product["name"]
             )
 
-            # -------------------------------------------------
-            # НОВАЯ ОТДЕЛЬНАЯ PAGE
-            # -------------------------------------------------
-
-            page = None
-
             try:
 
-                page = await browser.new_page()
-
                 status, reason = await check_product(
-                    page,
+                    browser_manager,
                     product
                 )
 
@@ -1684,90 +2233,6 @@ async def monitor_products(
                     reason
                 )
 
-                # -------------------------------------------------
-                # UNKNOWN / ERROR
-                # -------------------------------------------------
-
-                if status in (
-                    "unknown",
-                    "error"
-                ):
-
-                    print(
-                        "Стан не змінюємо."
-                    )
-
-                    continue
-
-                previous_status = product.get(
-                    "status"
-                )
-
-                # -------------------------------------------------
-                # OUT → IN
-                # -------------------------------------------------
-
-                if (
-                    previous_status == "out"
-                    and status == "in"
-                ):
-
-                    send_telegram(
-                        f"🟢 "
-                        f"{product['name']} "
-                        f"З'ЯВИЛАСЯ У ПРОДАЖУ!\n"
-                        f"🌐 {get_site_name(product['url'])}\n\n"
-                        f"{reason}",
-                        product_keyboard(
-                            product_id,
-                            product
-                        )
-                    )
-
-                    product["status"] = "in"
-
-                # -------------------------------------------------
-                # IN → OUT
-                # -------------------------------------------------
-
-                elif (
-                    previous_status == "in"
-                    and status == "out"
-                ):
-
-                    send_telegram(
-                        f"🔴 "
-                        f"{product['name']} "
-                        f"ЗАКІНЧИЛАСЯ!\n"
-                        f"🌐 {get_site_name(product['url'])}\n\n"
-                        f"{reason}",
-                        product_keyboard(
-                            product_id,
-                            product
-                        )
-                    )
-
-                    product["status"] = "out"
-
-                # -------------------------------------------------
-                # UNKNOWN INITIAL
-                # -------------------------------------------------
-
-                elif previous_status is None:
-
-                    product["status"] = status
-
-                    print(
-                        "Початковий стан:",
-                        status
-                    )
-
-                else:
-
-                    print(
-                        "Стан не змінився."
-                    )
-
             except Exception as error:
 
                 print(
@@ -1775,20 +2240,121 @@ async def monitor_products(
                     repr(error)
                 )
 
-            finally:
+                continue
 
-                if page:
+            # =============================================
+            # UNKNOWN / ERROR
+            # =============================================
 
-                    try:
-                        await page.close()
-                    except Exception:
-                        pass
+            if status in (
+                "unknown",
+                "error"
+            ):
 
-        save_products(
-            products
-        )
+                print(
+                    "Стан не змінюємо."
+                )
+
+                continue
+
+            previous_status = product.get(
+                "status"
+            )
+
+            # =============================================
+            # ПЕРВИЧНОЕ СОСТОЯНИЕ
+            # =============================================
+
+            if previous_status is None:
+
+                product["status"] = status
+
+                print(
+                    "Початковий стан:",
+                    status
+                )
+
+            # =============================================
+            # OUT → IN
+            # =============================================
+
+            elif (
+                previous_status == "out"
+                and
+                status == "in"
+            ):
+
+                print(
+                    "‼️ ТОВАР З'ЯВИВСЯ!"
+                )
+
+                send_telegram(
+
+                    f"🟢 {product['name']}\n"
+                    f"🌐 {get_site_name(product['url'])}\n\n"
+                    f"З'ЯВИЛАСЯ У ПРОДАЖУ!\n\n"
+                    f"{reason}",
+
+                    product_keyboard(
+                        product_id,
+                        product
+                    )
+                )
+
+                product["status"] = "in"
+
+            # =============================================
+            # IN → OUT
+            # =============================================
+
+            elif (
+                previous_status == "in"
+                and
+                status == "out"
+            ):
+
+                print(
+                    "Товар закінчився."
+                )
+
+                send_telegram(
+
+                    f"🔴 {product['name']}\n"
+                    f"🌐 {get_site_name(product['url'])}\n\n"
+                    f"ЗАКІНЧИЛАСЯ!\n\n"
+                    f"{reason}",
+
+                    product_keyboard(
+                        product_id,
+                        product
+                    )
+                )
+
+                product["status"] = "out"
+
+            else:
+
+                print(
+                    "Стан не змінився."
+                )
+
+        # Сохраняем после каждого полного цикла
+
+        try:
+
+            save_products(
+                products
+            )
+
+        except Exception as error:
+
+            print(
+                "Ошибка сохранения products.json:",
+                repr(error)
+            )
 
         print()
+
         print(
             f"Наступна перевірка через "
             f"{CHECK_INTERVAL} секунд."
@@ -1825,40 +2391,52 @@ async def main():
         "================================"
     )
 
+    # =============================================
+    # Загружаем товары
+    # =============================================
+
     products = load_products()
 
-    async with async_playwright() as p:
+    # =============================================
+    # Playwright
+    # =============================================
 
-        browser = await p.chromium.launch(
-            headless=True,
-            args=[
-                "--disable-dev-shm-usage",
-                "--no-sandbox",
-                "--disable-gpu",
-            ]
+    async with async_playwright() as playwright:
+
+        browser_manager = BrowserManager(
+            playwright
         )
-
-        telegram_page = None
 
         try:
 
-            telegram_page = await browser.new_page()
+            # =========================================
+            # КРИТИЧЕСКИ ВАЖНО:
+            #
+            # Telegram listener и мониторинг
+            # работают как две независимые задачи.
+            #
+            # Падение Playwright НЕ должно
+            # остановить Telegram.
+            # =========================================
 
             await asyncio.gather(
-                monitor_products(
-                    products,
-                    browser
-                ),
+
                 telegram_listener(
                     products,
-                    telegram_page
+                    browser_manager
+                ),
+
+                monitor_products(
+                    products,
+                    browser_manager
                 )
+
             )
 
         except Exception as error:
 
             print(
-                "MAIN ERROR:",
+                "Критическая ошибка main:",
                 repr(error)
             )
 
@@ -1866,17 +2444,19 @@ async def main():
 
             try:
 
-                if telegram_page:
-                    await telegram_page.close()
+                await browser_manager.close()
 
             except Exception:
-                pass
 
-            try:
-                await browser.close()
-            except Exception:
                 pass
 
 
-asyncio.run(main())
+# =========================================================
+# START
+# =========================================================
 
+if __name__ == "__main__":
+
+    asyncio.run(
+        main()
+    )
