@@ -14,6 +14,7 @@ async def check_product(browser_manager, product):
         "paeonyworld.pl",
         "peonypoland.pl",
         "peonyshop.com",
+        "alexflowers.lv",
     )
 
     if any(domain in url.lower() for domain in supported):
@@ -29,15 +30,21 @@ async def check_product(browser_manager, product):
             await page.wait_for_timeout(app.PAGE_WAIT)
 
             body = (await page.locator("body").inner_text()).lower()
-            for phrase in (
-                "just a moment",
-                "checking your browser",
-                "verify you are human",
-                "cf-chl",
-                "cloudflare",
-            ):
-                if phrase in body:
-                    return "unknown", "Сторінка захисту сайту"
+            protected = any(
+                phrase in body
+                for phrase in (
+                    "just a moment",
+                    "checking your browser",
+                    "verify you are human",
+                    "cf-chl",
+                    "cloudflare",
+                )
+            )
+
+            # Alex Flowers uses a browser challenge. Do NOT stop here:
+            # site_detection.py will query its public WooCommerce Store API.
+            if protected and "alexflowers.lv" not in url.lower():
+                return "unknown", "Сторінка захисту сайту"
 
             result = await detect(page, url)
             if result is not None:
