@@ -1,38 +1,18 @@
-name: Peony Monitor
+name: Peony Monitor — maintenance only
+
+# Railway is the single permanent runtime for the bot.
+# GitHub Actions must NOT start runner.py, otherwise Telegram getUpdates
+# gets a 409 Conflict because two bot instances run simultaneously.
 
 on:
   workflow_dispatch:
 
 jobs:
-  monitor:
+  maintenance:
     runs-on: ubuntu-latest
-    timeout-minutes: 350
-
-    permissions:
-      contents: write
-
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Install dependencies
+      - name: Maintenance check
         run: |
-          pip install -r requirements.txt
-          playwright install --with-deps chromium
-
-      - name: Run monitor
-        env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          CHAT_ID: ${{ secrets.CHAT_ID }}
-          # Use the built-in GitHub Actions token instead of a separate
-          # DATA_REPO_TOKEN secret. The job already has contents: write.
-          DATA_REPO_TOKEN: ${{ github.token }}
-          GITHUB_REPO: irinadyba/peony-monitor-bot
-          PRODUCTS_PATH: data/products.json
-          GITHUB_BRANCH: main
-        run: python runner.py
+          echo "Peony Monitor is running on Railway."
+          echo "This GitHub Actions workflow intentionally does not start runner.py."
+          echo "Do not use Run workflow to launch the bot."
