@@ -29,7 +29,9 @@ jobs:
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
-          DATA_REPO_TOKEN: ${{ secrets.DATA_REPO_TOKEN }}
+          # Use the built-in GitHub Actions token instead of a separate
+          # DATA_REPO_TOKEN secret. The job already has contents: write.
+          DATA_REPO_TOKEN: ${{ github.token }}
           GITHUB_REPO: irinadyba/peony-monitor-bot
           PRODUCTS_PATH: data/products.json
           GITHUB_BRANCH: main
