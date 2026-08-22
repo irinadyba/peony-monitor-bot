@@ -1,4 +1,6 @@
 import re
+import requests
+from urllib.parse import urlparse
 
 
 SITE_RULES = {
@@ -21,6 +23,10 @@ SITE_RULES = {
     "peonyshop.com": {
         "out": ["sold out", "out of stock", "unavailable"],
         "in": ["add to cart", "in stock", "available"],
+    },
+    "alexflowers.lv": {
+        "out": ["not available", "out of stock", "sold out", "not in stock"],
+        "in": ["add to cart", "in stock", "available", "pievienot grozam", "pievienot grozam"],
     },
 }
 
@@ -77,11 +83,89 @@ async def find_product_area(page):
         return None
 
 
+async def detect_alexflowers_api(url):
+    """Use the public WooCommerce Store API when Cloudflare hides the product page."""
+    parsed = urlparse(url)
+    if not parsed.scheme or not parsed.netloc:
+        return None
+
+    slug = parsed.path.rstrip("/").split("/")[-1]
+    if not slug:
+        return None
+
+    base = f"{parsed.scheme}://{parsed.netloc}"
+    endpoints = [
+        f"{base}/wp-json/wc/store/v1/products?slug={slug}",
+        f"{base}/wp-json/wc/store/v1/products?search={slug.replace('-', '%20')}",
+    ]
+
+    headers = {
+        "User-Agent": "Mozilla/5.0 (compatible; PeonyMonitor/1.0)",
+        "Accept": "application/json",
+    }
+
+    for endpoint in endpoints:
+        try:
+            response = await __import__("asyncio").to_thread(
+                requests.get,
+                endpoint,
+                headers=headers,
+                timeout=20,
+            )
+
+            if response.status_code != 200:
+                continue
+
+            payload = response.json()
+            products = payload if isinstance(payload, list) else payload.get("products", [])
+
+            if not products:
+                continue
+
+            # Prefer an exact slug match when the API search endpoint was used.
+            product = None
+            for item in products:
+                if isinstance(item, dict) and item.get("slug") == slug:
+                    product = item
+                    break
+            if product is None and len(products) == 1:
+                product = products[0]
+            if product is None:
+                continue
+
+            if "is_in_stock" in product:
+                if product["is_in_stock"] is True:
+                    return "in", "WooCommerce API: is_in_stock=true"
+                if product["is_in_stock"] is False:
+                    return "out", "WooCommerce API: is_in_stock=false"
+
+            add_to_cart = product.get("add_to_cart")
+            if isinstance(add_to_cart, dict):
+                if add_to_cart.get("url") or add_to_cart.get("text"):
+                    return "in", "WooCommerce API: add_to_cart available"
+
+            return "unknown", "WooCommerce API не содержит однозначного статуса"
+
+        except Exception as error:
+            print("[AlexFlowers API]", endpoint, repr(error))
+            continue
+
+    return None
+
+
 async def detect(page, url):
     domain = domain_from_url(url)
     rules = SITE_RULES.get(domain)
     if not rules:
         return None
+
+    # Alex Flowers is protected by a browser challenge. The public WooCommerce
+    # Store API is checked before DOM parsing so the bot does not mistake the
+    # Cloudflare page for an unknown product.
+    if domain == "alexflowers.lv":
+        api_result = await detect_alexflowers_api(url)
+        if api_result is not None:
+            return api_result
 
     area = await find_product_area(page)
     if area is None:
@@ -89,7 +173,6 @@ async def detect(page, url):
 
     text = normalize(await area.inner_text())
 
-    # Negative signals have priority. A price alone never means 'in stock'.
     phrase = first_phrase(text, rules["out"])
     if phrase:
         return "out", phrase
@@ -99,7 +182,6 @@ async def detect(page, url):
         return "in", phrase
 
     if domain == "peonyshop.com":
-        # Peonyshop may expose availability through a priced division table.
         if re.search(r"\b\d[\d\s.,]*\s*€", text):
             return "in", "Цена доступного варианта найдена"
 
