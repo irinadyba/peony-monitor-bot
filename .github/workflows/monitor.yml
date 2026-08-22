@@ -33,4 +33,4 @@ jobs:
           GITHUB_REPO: irinadyba/peony-monitor-bot
           PRODUCTS_PATH: data/products.json
           GITHUB_BRANCH: main
-        run: python main.py
+        run: python runner.py
