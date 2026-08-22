@@ -1,8 +1,9 @@
 import asyncio
-import main as app
+import app
 from site_detection import detect
 
 
+# Сохраняем оригинальную проверку из app.py.
 ORIGINAL_CHECK_PRODUCT = app.check_product
 
 
@@ -41,8 +42,8 @@ async def check_product(browser_manager, product):
                 )
             )
 
-            # Alex Flowers uses a browser challenge. Do NOT stop here:
-            # site_detection.py will query its public WooCommerce Store API.
+            # Для Alex Flowers Cloudflare не является окончательной ошибкой:
+            # site_detection.py проверит публичный WooCommerce Store API.
             if protected and "alexflowers.lv" not in url.lower():
                 return "unknown", "Сторінка захисту сайту"
 
@@ -64,6 +65,8 @@ async def check_product(browser_manager, product):
     return await ORIGINAL_CHECK_PRODUCT(browser_manager, product)
 
 
+# Підміняємо тільки функцію перевірки, а весь життєвий цикл бота
+# (Telegram listener, моніторинг, збереження) залишаємо з app.py.
 app.check_product = check_product
 
 
