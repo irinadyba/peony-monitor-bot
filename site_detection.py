@@ -26,7 +26,7 @@ SITE_RULES = {
     },
     "alexflowers.lv": {
         "out": ["not available", "out of stock", "sold out", "not in stock"],
-        "in": ["add to cart", "in stock", "available", "pievienot grozam", "pievienot grozam"],
+        "in": ["add to cart", "in stock", "available", "pievienot grozam"],
     },
 }
 
@@ -84,7 +84,12 @@ async def find_product_area(page):
 
 
 async def detect_alexflowers_api(url):
-    """Use the public WooCommerce Store API when Cloudflare hides the product page."""
+    """Read Alex Flowers stock from the public WooCommerce Store API.
+
+    The storefront is behind a browser challenge, but WooCommerce exposes
+    product stock through an unauthenticated Store API. Try the canonical
+    single-product-by-slug endpoint first, then the collection endpoint.
+    """
     parsed = urlparse(url)
     if not parsed.scheme or not parsed.netloc:
         return None
@@ -95,34 +100,47 @@ async def detect_alexflowers_api(url):
 
     base = f"{parsed.scheme}://{parsed.netloc}"
     endpoints = [
-        f"{base}/wp-json/wc/store/v1/products?slug={slug}",
-        f"{base}/wp-json/wc/store/v1/products?search={slug.replace('-', '%20')}",
+        f"{base}/wp-json/wc/store/v1/products/{slug}",
+        f"{base}/wp-json/wc/store/v1/products",
     ]
 
     headers = {
         "User-Agent": "Mozilla/5.0 (compatible; PeonyMonitor/1.0)",
         "Accept": "application/json",
+        "Cache-Control": "no-cache",
     }
 
-    for endpoint in endpoints:
+    for index, endpoint in enumerate(endpoints):
         try:
+            params = None if index == 0 else {"slug": slug, "per_page": 10}
+
             response = await __import__("asyncio").to_thread(
                 requests.get,
                 endpoint,
                 headers=headers,
+                params=params,
                 timeout=20,
+            )
+
+            print(
+                "[AlexFlowers API]",
+                response.status_code,
+                response.url,
             )
 
             if response.status_code != 200:
                 continue
 
             payload = response.json()
-            products = payload if isinstance(payload, list) else payload.get("products", [])
+
+            if index == 0:
+                products = [payload] if isinstance(payload, dict) else []
+            else:
+                products = payload if isinstance(payload, list) else payload.get("products", [])
 
             if not products:
                 continue
 
-            # Prefer an exact slug match when the API search endpoint was used.
             product = None
             for item in products:
                 if isinstance(item, dict) and item.get("slug") == slug:
@@ -139,9 +157,27 @@ async def detect_alexflowers_api(url):
                 if product["is_in_stock"] is False:
                     return "out", "WooCommerce API: is_in_stock=false"
 
+            # Some WooCommerce installations expose the purchase state even
+            # when stock is not managed directly on the product object.
+            if product.get("is_purchasable") is False:
+                return "out", "WooCommerce API: is_purchasable=false"
+
+            availability = product.get("stock_availability")
+            if isinstance(availability, dict):
+                availability_text = normalize(availability.get("text"))
+                availability_class = normalize(availability.get("class"))
+
+                if any(x in availability_class for x in ("outofstock", "out-of-stock", "unavailable")):
+                    return "out", f"WooCommerce API: stock_availability.class={availability_class}"
+
+                if any(x in availability_text for x in ("not available", "out of stock", "sold out")):
+                    return "out", f"WooCommerce API: stock_availability.text={availability_text}"
+
             add_to_cart = product.get("add_to_cart")
             if isinstance(add_to_cart, dict):
-                if add_to_cart.get("url") or add_to_cart.get("text"):
+                add_text = normalize(add_to_cart.get("text"))
+                add_url = add_to_cart.get("url")
+                if add_url or add_text:
                     return "in", "WooCommerce API: add_to_cart available"
 
             return "unknown", "WooCommerce API не содержит однозначного статуса"
@@ -159,9 +195,6 @@ async def detect(page, url):
     if not rules:
         return None
 
-    # Alex Flowers is protected by a browser challenge. The public WooCommerce
-    # Store API is checked before DOM parsing so the bot does not mistake the
-    # Cloudflare page for an unknown product.
     if domain == "alexflowers.lv":
         api_result = await detect_alexflowers_api(url)
         if api_result is not None:
