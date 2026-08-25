@@ -14,19 +14,30 @@ async def check_product(browser_manager, product):
         "paeonyworld.pl",
         "peonypoland.pl",
         "peonyshop.com",
+        "alexflowers.lv",
     )
 
     if any(domain in url.lower() for domain in supported):
         page = None
         try:
             print("[ADAPTIVE] Відкриваю:", url)
-            page = await app.browser_manager.new_page() if False else await browser_manager.new_page()
+            page = await browser_manager.new_page()
             await page.goto(
                 url,
                 wait_until="domcontentloaded",
                 timeout=app.PAGE_TIMEOUT,
             )
             await page.wait_for_timeout(app.PAGE_WAIT)
+
+            # Alex Flowers is protected by Cloudflare. Its public WooCommerce
+            # Store API can still provide the real stock status, so give the
+            # site-specific detector a chance before treating the challenge
+            # page as an unknown result.
+            if "alexflowers.lv" in url.lower():
+                result = await detect(page, url)
+                if result is not None and result[0] != "unknown":
+                    print("[ADAPTIVE] Результат:", result)
+                    return result
 
             body = (await page.locator("body").inner_text()).lower()
             for phrase in (
